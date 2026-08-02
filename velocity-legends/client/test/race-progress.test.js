@@ -1,0 +1,14 @@
+import assert from "node:assert/strict";
+import * as THREE from "three";
+import { RaceProgress } from "../src/three/RaceProgress.js";
+const checkpoints=[new THREE.Vector3(0,0,0),new THREE.Vector3(10,0,0),new THREE.Vector3(20,0,0),new THREE.Vector3(30,0,0)];
+const p=new RaceProgress(["player","ai1","ai2","ai3"]);
+p.setState("player",{normalizedSegmentProgress:.2,distanceToNextCheckpoint:8});p.setState("ai1",{normalizedSegmentProgress:.1,distanceToNextCheckpoint:9});assert.equal(p.position("player"),1);
+p.setState("ai1",{normalizedSegmentProgress:.5,distanceToNextCheckpoint:4});assert.equal(p.position("player"),2);
+p.setState("player",{normalizedSegmentProgress:.7,distanceToNextCheckpoint:2});assert.equal(p.position("player"),1);
+p.advanceCheckpoint("ai2");assert.equal(p.position("ai2"),1);
+p.advanceCheckpoint("player");p.advanceCheckpoint("player");assert.equal(p.position("player"),1);
+p.setState("ai3",{completedLaps:1,currentCheckpointIndex:0});assert.equal(p.position("ai3"),1);
+p.setState("ai1",{finished:true,finishOrder:2});p.setState("ai2",{finished:true,finishOrder:1});assert.deepEqual(p.rank().slice(0,2).map(x=>x.racerId),["ai2","ai1"]);
+const resetState=p.setState("player",{completedLaps:2,currentCheckpointIndex:2,previousCheckpointIndex:1,normalizedSegmentProgress:.6,maxProgressThisLap:.6});const sameState=p.state("player");p.reconcileAfterRespawn("player",new THREE.Vector3(15,0,0),checkpoints);assert.strictEqual(p.state("player"),sameState);assert.equal(p.state("player").completedLaps,2);assert.equal(p.state("player").currentCheckpointIndex,2);assert.ok(Number.isFinite(p.state("player").totalProgress));
+console.log("race-progress tests passed");

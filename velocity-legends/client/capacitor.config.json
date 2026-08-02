@@ -1,0 +1,6 @@
+{
+  "appId": "com.velocitylegends.racing",
+  "appName": "Velocity Legends",
+  "webDir": "dist",
+  "server": { "androidScheme": "https" }
+}
