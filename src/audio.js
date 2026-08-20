@@ -230,8 +230,7 @@ export class AudioSystem {
   }
 
   startMusic() {
-    if (!this.enabled || this.musicTimer) return;
-    this.resume();
+    if (!this.enabled || this.musicTimer || !this.ctx || this.ctx.state !== 'running') return;
     let step = 0;
     const bass = [82.4, 82.4, 98, 110, 73.4, 82.4, 123.5, 110];
     this.musicTimer = setInterval(() => {

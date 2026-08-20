@@ -33,10 +33,12 @@ jobs:
           node-version: 22
 
       - name: Install packages
-        run: npm install
+        run: |
+          rm -rf node_modules
+          npm install --no-audit --no-fund
 
       - name: Build game
-        run: npm run build
+        run: node ./node_modules/vite/bin/vite.js build
         env:
           VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
           VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
