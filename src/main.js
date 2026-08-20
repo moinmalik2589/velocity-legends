@@ -65,7 +65,7 @@ const app=$('#app');app.innerHTML=`
  <div class="objective" id="objective"></div><div class="combo" id="combo"></div><div class="airtime" id="airtime"></div><div class="stunt" id="stunt"></div><div class="knockdowns" id="knockdowns"></div>
  <div class="nitro-label">NITRO <b id="nitroState"></b></div><div class="nitro"><i id="nitroFill"></i></div>
  <div class="speed"><svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="52"></circle><path id="speedArc" d="M 20 84 A 48 48 0 1 1 100 84"></path></svg><div><b id="speed">0</b><br><small>KM/H</small><em id="gear">N</em></div></div>
- <div class="mobile"><button class="touch" id="left">◀</button><button class="touch" id="right">▶</button><button class="touch driftBtn" id="drift">DRIFT</button><button class="touch stuntBtn" id="stuntBtn">360</button><button class="touch" id="brake">▼</button><button class="touch" id="gas">▲</button><button class="touch boost" id="boost">N₂O</button></div>
+ <div class="mobile"><button class="touch brakeMobile" id="brake">BRAKE</button><button class="touch boost" id="boost">N₂O</button></div>
 </div>
 <div id="countdown" class="countdown"></div><div id="toastZone"></div><div id="shell" class="menu"></div>`;
 const shell=$('#shell');
@@ -179,9 +179,10 @@ function applyAdminControls(data={}){
 
   let changed=false;
 
-  // Set an exact credit balance from Firestore with: creditsOverride: 5000
-  if(Number.isFinite(Number(data.creditsOverride)) && Number(data.creditsOverride)>=0){
-    const next=Math.round(Number(data.creditsOverride));
+  // Admin can edit either creditsOverride or the visible lastKnownCredits field.
+  const adminCredits=data.creditsOverride ?? data.lastKnownCredits;
+  if(adminCredits!==undefined && Number.isFinite(Number(adminCredits)) && Number(adminCredits)>=0){
+    const next=Math.round(Number(adminCredits));
     if(profile.credits!==next){profile.credits=next;changed=true}
   }
 
@@ -416,9 +417,8 @@ function spawnRace(){if(player?.mesh)world.remove(player.mesh);ai.forEach(a=>wor
 const keys={},touchState={};
 addEventListener('keydown',e=>{keys[e.code]=true;if(e.code==='KeyE'&&state==='race')trigger360();if(e.code==='Escape'&&['race','countdown','paused'].includes(state))togglePause();if(e.code==='KeyR'&&['race','paused'].includes(state))restartRace()});
 addEventListener('keyup',e=>keys[e.code]=false);
-['left','right','gas','brake','boost','drift'].forEach(id=>{const el=$('#'+id);['pointerdown','pointerenter'].forEach(ev=>el.addEventListener(ev,e=>{if(ev==='pointerenter'&&!e.buttons)return;touchState[id]=true;audio.resume();if(id==='drift'&&ev==='pointerdown'){const n=performance.now();if(n-lastDriftTap<360)trigger360();lastDriftTap=n}e.preventDefault()}));['pointerup','pointercancel','pointerleave'].forEach(ev=>el.addEventListener(ev,e=>{touchState[id]=false;e.preventDefault()}))});
-$('#stuntBtn').addEventListener('pointerdown',e=>{e.preventDefault();audio.resume();trigger360()});
-$('#pauseBtn').onclick=togglePause;
+['brake','boost'].forEach(id=>{const el=$('#'+id);if(!el)return;['pointerdown','pointerenter'].forEach(ev=>el.addEventListener(ev,e=>{if(ev==='pointerenter'&&!e.buttons)return;touchState[id]=true;audio.resume();e.preventDefault()}));['pointerup','pointercancel','pointerleave'].forEach(ev=>el.addEventListener(ev,e=>{touchState[id]=false;e.preventDefault()}))});
+const pauseButton=$('#pauseBtn');if(pauseButton)pauseButton.onclick=togglePause;
 function gamepad(){const g=navigator.getGamepads?.()[0];if(!g)return null;return{steer:Math.abs(g.axes[0])>.12?g.axes[0]:0,gas:g.buttons[7]?.value||g.buttons[0]?.value||0,brake:g.buttons[6]?.value||g.buttons[1]?.value||0,boost:g.buttons[4]?.pressed||g.buttons[5]?.pressed,drift:g.buttons[2]?.pressed,stunt:g.buttons[3]?.pressed,pause:g.buttons[9]?.pressed}}
 function nearestTrack(pos){let best=0,bd=Infinity;for(let i=0;i<trackSamples.length;i++){const d=trackSamples[i].distanceToSquared(pos);if(d<bd){bd=d;best=i}}return{t:best/(trackSamples.length-1),point:trackSamples[best],dist:Math.sqrt(bd)}}
 function startRace(e){pushGameHistory('race');trackEvent('race_started',{event_id:e.id,mode:e.mode,track:e.track,car_id:profile.selectedCar,rivals:e.ai,endless:Boolean(e.endless)});audio.resume();audio.stopMusic();currentEvent=e;buildWorld(e);spawnRace();shell.style.display='none';$('#hud').hidden=false;$('#minimap').style.display=e.endless?'none':'block';restartRace();}
@@ -435,9 +435,9 @@ function knockdown(a){if(eliminated.includes(a)||a.knocked)return;a.knocked=true
 function collideCars(){for(const a of ai){if(eliminated.includes(a)||a.crashTime>0)continue;const d=player.mesh.position.distanceTo(a.mesh.position);if(d<4.15){if((player.shock||player.stunt)&&Math.abs(player.speed)>28){knockdown(a);player.speed*=.96}else{const push=player.mesh.position.clone().sub(a.mesh.position).setY(0).normalize();player.mesh.position.addScaledVector(push,.32);player.speed*=.79;player.combo=0;cameraShake=Math.max(cameraShake,.42);vfx.burst(player.mesh.position.clone().add(new THREE.Vector3(0,.35,0)),'spark',12,push);audio.impact?.(Math.min(1,d/4.15+.35));vibrate([45,25,70]);flashFx('crash')}}}}
 function updatePlayer(dt,now){
  const gp=gamepad();if(gp?.pause&&!lastPause){togglePause();lastPause=true}if(!gp?.pause)lastPause=false;if(gp?.stunt&&!lastPadStunt)trigger360();lastPadStunt=!!gp?.stunt;
- const acc=keys.KeyW||keys.ArrowUp||touchState.gas||gp?.gas>.1,br=keys.KeyS||keys.ArrowDown||touchState.brake||gp?.brake>.1;let steer=(keys.KeyA||keys.ArrowLeft||touchState.left?1:0)-(keys.KeyD||keys.ArrowRight||touchState.right?1:0);if(gp?.steer)steer=-gp.steer;else if(Math.abs(steer)<.01)steer=-tiltInput();
+ const mobileDrive=matchMedia('(pointer: coarse)').matches;const acc=mobileDrive||keys.KeyW||keys.ArrowUp||gp?.gas>.1,br=keys.KeyS||keys.ArrowDown||touchState.brake||gp?.brake>.1;let steer=(keys.KeyA||keys.ArrowLeft?1:0)-(keys.KeyD||keys.ArrowRight?1:0);if(gp?.steer)steer=-gp.steer;else if(Math.abs(steer)<.01)steer=-tiltInput();
  const drifting=(keys.Space||touchState.drift||gp?.drift)&&Math.abs(player.speed)>14&&Math.abs(steer)>.08&&!player.stunt;audio.skid?.(drifting?Math.min(1,Math.abs(player.speed)/45):0);const boost=(keys.ShiftLeft||keys.ShiftRight||touchState.boost||gp?.boost)&&player.nitro>0&&player.speed>8,perfect=boost&&player.nitro>32&&player.nitro<62;player.shock=boost&&player.nitro>82;
- const max=player.def.top*(player.shock?1.22:perfect?1.11:boost?1.065:1);if(acc)player.speed+=player.def.accel*dt;else player.speed-=8.5*dt;if(br)player.speed-=34*dt;player.speed=clamp(player.speed,-10,max);if(boost){player.speed+=21*player.def.nitro*dt;player.nitro=Math.max(0,player.nitro-(player.shock?38:perfect?24:29)*dt)}else player.nitro=Math.min(100,player.nitro+(drifting?14.5:5.2)*dt);
+ const max=player.def.top*(player.shock?1.22:perfect?1.11:boost?1.065:1);if(acc&&!br)player.speed+=player.def.accel*dt;else if(!br)player.speed=Math.max(0,player.speed-8.5*dt);if(br)player.speed=Math.max(0,player.speed-42*dt);player.speed=clamp(player.speed,0,max);if(boost){player.speed+=21*player.def.nitro*dt;player.nitro=Math.max(0,player.nitro-(player.shock?38:perfect?24:29)*dt)}else player.nitro=Math.min(100,player.nitro+(drifting?14.5:5.2)*dt);
  if(player.shock){boostPulse+=dt;cameraShake=Math.max(cameraShake,.10);if(boostPulse>.045){boostPulse=0;const back=new THREE.Vector3(-Math.sin(player.angle),.3,-Math.cos(player.angle));vfx.trail(player.mesh.position.clone().addScaledVector(back,3.3),0xaeefff,1.8)}}else boostPulse=0;audio.engineSpeed(player.speed,boost);
  let handling=player.def.handling;if(drifting){handling*=1.47;player.drift+=Math.abs(player.speed)*dt;player.comboTime=now+1450;player.combo=Math.max(player.combo,1+Math.floor(player.drift/28));player.maxCombo=Math.max(player.maxCombo,player.combo);player.speed*=Math.pow(.987,dt*60);if(Math.random()<dt*22){const s=new THREE.Vector3(Math.cos(player.angle),0,-Math.sin(player.angle));vfx.burst(player.mesh.position.clone().addScaledVector(s,(Math.random()>.5?1.4:-1.4)),'smoke',1)}}else player.drift=Math.max(0,player.drift-16*dt);
  const steerPower=(.45+Math.min(Math.abs(player.speed)/24,1))*handling;player.angle+=steer*steerPower*dt*Math.sign(player.speed||1);const f=new THREE.Vector3(Math.sin(player.angle),0,Math.cos(player.angle));player.mesh.position.addScaledVector(f,player.speed*dt);if(!player.stunt||player.stunt.type!=='360')player.mesh.rotation.y=player.angle;

@@ -96,3 +96,15 @@ html,body,#app,#shell,.menu,.panel.wide{overflow:hidden!important;overscroll-beh
   .trackGrid{margin-top:52px;gap:6px}.trackCard{min-height:105px;padding:9px}
   .setupGrid{margin-top:52px}.setupTrack,.setupCar{padding:12px}.setupTrack b,.setupCar b{font-size:18px}
 }
+
+/* Mobile usability */
+body{overflow:hidden;overscroll-behavior:none}
+.panel.wide{overflow-x:hidden!important;overflow-y:auto!important;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding-bottom:calc(96px + env(safe-area-inset-bottom))!important}
+.panel.wide::-webkit-scrollbar{display:none}
+@media (max-width:900px),(pointer:coarse){
+  .panel.wide{max-height:calc(100dvh - 48px)!important}
+  .mobile .touch{display:none!important}
+  .mobile #brake,.mobile #boost{display:block!important;position:absolute!important;bottom:max(18px,env(safe-area-inset-bottom))!important;width:78px!important;height:78px!important}
+  .mobile #brake{left:max(18px,env(safe-area-inset-left))!important;right:auto!important}
+  .mobile #boost{right:max(18px,env(safe-area-inset-right))!important;left:auto!important}
+}
