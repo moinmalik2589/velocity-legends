@@ -219,8 +219,8 @@ function accountScreen(){
 }
 
 function startAccountBoot(){
-  if(!firebaseConfigured()){showFirebaseMissing();return}
   firstLaunchGate(()=>{
+    if(!firebaseConfigured()){showFirebaseMissing();return}
     watchAuth(async(user)=>{
       if(!user){firebaseUser=null;showLogin();return}
       firebaseUser=user;

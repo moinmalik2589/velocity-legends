@@ -27,13 +27,13 @@ import {
 } from 'firebase/firestore';
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyC4SeLAbMLUzTuDmJbVPGjIz-7eR6GMpOU',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'moin-malik-velocity-legends.firebaseapp.com',
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'moin-malik-velocity-legends',
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || 'moin-malik-velocity-legends.firebasestorage.app',
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '237353728769',
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || '1:237353728769:web:d6c140bc1fca3a209ff900',
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || 'G-XBVYNE4Z7C'
 };
 
 let app = null;
