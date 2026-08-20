@@ -7,7 +7,7 @@ service cloud.firestore {
       allow create: if request.auth != null
         && request.auth.uid == uid
         && request.resource.data.keys().hasOnly([
-          'email', 'phoneNumber', 'displayName', 'photoURL',
+          'email', 'phoneNumber', 'displayName', 'photoURL', 'provider',
           'createdAt', 'lastSeenAt', 'lastDevice', 'installed',
           'lastKnownCredits', 'selectedCar', 'careerCompleted'
         ]);
@@ -15,7 +15,7 @@ service cloud.firestore {
       allow update: if request.auth != null
         && request.auth.uid == uid
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
-          'email', 'phoneNumber', 'displayName', 'photoURL',
+          'email', 'phoneNumber', 'displayName', 'photoURL', 'provider',
           'lastSeenAt', 'lastDevice', 'installed',
           'lastKnownCredits', 'selectedCar', 'careerCompleted'
         ]);

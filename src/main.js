@@ -176,14 +176,48 @@ function showBlocked(){
 
 function applyAdminControls(data={}){
   if(data.blocked===true){showBlocked();return}
+
+  let changed=false;
+
+  // Set an exact credit balance from Firestore with: creditsOverride: 5000
+  if(Number.isFinite(Number(data.creditsOverride)) && Number(data.creditsOverride)>=0){
+    const next=Math.round(Number(data.creditsOverride));
+    if(profile.credits!==next){profile.credits=next;changed=true}
+  }
+
+  // One-time add/remove credits. Change creditGrantId each time you want it applied.
   const grantId=String(data.creditGrantId||'').trim();
   const grant=Number(data.creditGrant||0);
   if(grantId && grantId!==profile.lastCreditGrantId && Number.isFinite(grant) && grant!==0){
     profile.credits=Math.max(0,profile.credits+Math.round(grant));
     profile.lastCreditGrantId=grantId;
-    save();
+    changed=true;
     if(gameBooted) toast(`${grant>0?'+':''}${Math.round(grant)} ADMIN CREDITS`,'good');
   }
+
+  // Firestore array: unlockedCars = ['vortex','razor', ...]
+  if(Array.isArray(data.unlockedCars)){
+    const valid=[...new Set(data.unlockedCars.filter(id=>CARS.some(c=>c.id===id)))];
+    if(!valid.includes('vortex'))valid.unshift('vortex');
+    if(JSON.stringify(valid)!==JSON.stringify(profile.unlocked)){profile.unlocked=valid;changed=true}
+  }
+
+  // Firestore array: lockedCars = ['razor', ...] removes those cars from the garage.
+  if(Array.isArray(data.lockedCars) && data.lockedCars.length){
+    const locked=new Set(data.lockedCars);
+    const next=profile.unlocked.filter(id=>id==='vortex'||!locked.has(id));
+    if(JSON.stringify(next)!==JSON.stringify(profile.unlocked)){profile.unlocked=next;changed=true}
+  }
+
+  // Firestore array containing achievement IDs. This becomes the exact earned set.
+  if(Array.isArray(data.unlockedAchievements)){
+    const next={};
+    for(const id of data.unlockedAchievements){if(ACHIEVEMENTS.some(a=>a.id===id))next[id]=true}
+    if(JSON.stringify(next)!==JSON.stringify(profile.achievements)){profile.achievements=next;changed=true}
+  }
+
+  if(!profile.unlocked.includes(profile.selectedCar)){profile.selectedCar=profile.unlocked[0]||'vortex';changed=true}
+  if(changed){save();if(gameBooted&&state==='menu')home()}
   if(state==='blocked') home();
 }
 
@@ -241,7 +275,7 @@ function ensureUpgrade(id){profile.upgrades[id]??={engine:0,handling:0,nitro:0};
 function carColor(id){const c=carById(id);return Number.isFinite(profile.carColors[id])?profile.carColors[id]:c.color}
 function tunedCar(id){const c={...carById(id)},u=ensureUpgrade(id);c.color=carColor(id);c.top+=u.engine*1.25;c.accel+=u.engine*1.05;c.handling+=u.handling*.035;c.nitro+=u.nitro*.035;return c}
 function menuChrome(title,body,sub=''){pushGameHistory(title.toLowerCase());destroyGaragePreview();destroyHomePreview();shell.style.display='grid';shell.innerHTML=`<div class="gameTop"><div class="brandMini"><b>VL</b><span>VELOCITY LEGENDS</span></div><div class="topResource"><span>⚡ 12/12</span><span>◈ ${credits()}</span><span>⬡ ${Math.floor(profile.credits/12)}</span><button class="gearMini" id="topSettings">⚙</button></div></div><div class="panel wide"><div class="menuhead"><div><div class="eyebrow">VELOCITY LEGENDS • WORLD TOUR</div><h2>${title}</h2>${sub?`<p>${sub}</p>`:''}</div></div>${body}</div>`;setTimeout(()=>{const x=$('#topSettings');if(x)x.onclick=settings},0);}
-function toast(t,kind='info'){const x=document.createElement('div');x.className=`toast ${kind}`;x.textContent=t;$('#toastZone').append(x);setTimeout(()=>x.remove(),2100)}
+function toast(t,kind='info'){const zone=$('#toastZone');zone.replaceChildren();const x=document.createElement('div');x.className=`toast ${kind}`;x.textContent=t;zone.append(x);setTimeout(()=>x.remove(),2100)}
 function todayKey(){const d=new Date();return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`}
 function claimDaily(){const key=todayKey();if(profile.lastDaily===key)return false;profile.daily=(profile.daily||0)+1;const reward=500+Math.min(6,profile.daily%7)*250;profile.credits+=reward;profile.lastDaily=key;save();setTimeout(()=>{audio.reward();toast(`DAILY REWARD +${reward} CR`,'good')},450);return true}
 function progressCount(){return Object.keys(profile.completed).length}
@@ -446,12 +480,21 @@ function weatherTick(dt){if(!weatherParticles)return;const arr=weatherParticles.
 function animate(now){requestAnimationFrame(animate);if(state==='garage')renderGaragePreview(now);if(state==='menu'&&homePreview)renderHomePreview(now);const dt=Math.min(.035,(now-prev)/1000);prev=now;if(state==='countdown'){const rem=countdownUntil-now;$('.cinematicBars').classList.add('on');if(rem<=0){state='race';$('.cinematicBars').classList.remove('on');settleCarOnRoad(player.mesh,0,true);ai.forEach(a=>settleCarOnRoad(a.mesh,0,true));updateStartLights(0);$('#countdown').textContent='GO!';audio.countdown(0);audio.engineSpeed(0);cameraShake=.38;setTimeout(()=>$('#countdown').textContent='',560)}else{const n=Math.min(3,Math.ceil(rem/1000));if($('#countdown').textContent!==String(n)){audio.countdown(n);$('#countdown').textContent=n}updateGridAnimation(dt,now,rem)}}else if(state==='race'){updatePlayer(dt,now);updateAI(dt,now);knockout(now);hud(now)}if(state==='countdown')updateStartCamera(dt,now,countdownUntil-now);else if(state!=='paused')updateCamera(dt);weatherTick(dt);updateEnvironmentVisuals(world,dt,now);vfx.update(dt);pickups.forEach((p,i)=>{if(!p.taken){p.mesh.rotation.y+=dt*2.2;p.mesh.rotation.x+=dt*.8;p.mesh.position.y=1.35+Math.sin(now*.004+i)*.28}});if(profile.quality==='low')renderer.render(scene,camera);else composer.render()}
 function applyQuality(){const q=profile.quality;renderer.setPixelRatio(Math.min(devicePixelRatio,q==='high'?1.65:q==='medium'?1.2:1));renderer.shadowMap.enabled=q!=='low';sun.shadow.mapSize.set(q==='high'?2048:1024,q==='high'?2048:1024)}applyQuality();audio.setEnabled(profile.sound);
 addEventListener('popstate',e=>{
+  // Android back button and back gesture use browser history.
   if(state==='race'||state==='countdown'){
     history.pushState({vlScreen:'race'},'',location.href);
-    togglePause();
+    if(state!=='paused')togglePause();
     return;
   }
-  const target=e.state?.vlScreen||'velocity legends';
+  if(state==='paused'){
+    shell.style.display='none';
+    $('#hud').hidden=false;
+    state='race';
+    audio.resume();
+    history.pushState({vlScreen:'race'},'',location.href);
+    return;
+  }
+  const target=e.state?.vlScreen||'home';
   historyRender=true;
   if(target==='career')career();
   else if(target==='quick race')quickRace();
