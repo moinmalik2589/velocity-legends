@@ -1,0 +1,23 @@
+{
+  "name": "velocity-legends-cinematic-ui",
+  "version": "6.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "test": "node test/validate-game.test.js",
+    "preview": "vite preview",
+    "android:sync": "npx cap sync android",
+    "android:open": "npx cap open android"
+  },
+  "devDependencies": {
+    "vite": "^8.2.0"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "three": "^0.185.1"
+  }
+}
