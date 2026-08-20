@@ -8,14 +8,54 @@ import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
 import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
 import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
 import {RaceVFX} from './vfx.js';
+import {
+  createPhoneVerifier,
+  currentPlayer,
+  firebaseConfigured,
+  hasPhoneProvider,
+  logoutPlayer,
+  markInstalled,
+  refreshPlayerToken,
+  registerPlayer,
+  sendPhoneLinkCode,
+  setAnalyticsEnabled,
+  setAnalyticsUser,
+  setPlayerProperties,
+  signInGoogle,
+  startAnalytics,
+  syncPlayerStats,
+  trackEvent,
+  trackScreen,
+  watchAuth,
+  watchPlayerAdmin
+} from './firebase.js';
 
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)], clamp=THREE.MathUtils.clamp, lerp=THREE.MathUtils.lerp;
 const SAVE_KEY='velocityLegendsFinal:v1';
-const fresh={credits:3500,selectedCar:'vortex',unlocked:['vortex'],completed:{},best:{},upgrades:{},carColors:{},achievements:{},sound:true,music:true,quality:'high',camera:'dynamic',daily:0,lastDaily:''};
+const fresh={credits:3500,selectedCar:'vortex',unlocked:['vortex'],completed:{},best:{},upgrades:{},carColors:{},achievements:{},sound:true,music:true,quality:'high',camera:'dynamic',analytics:true,daily:0,lastDaily:'',lastCreditGrantId:''};
 let profile={...fresh};try{profile={...fresh,...JSON.parse(localStorage.getItem(SAVE_KEY)||'{}')}}catch{}
 profile.unlocked=Array.isArray(profile.unlocked)?profile.unlocked:['vortex'];profile.upgrades=profile.upgrades||{};profile.carColors=profile.carColors||{};profile.achievements=profile.achievements||{};
-const save=()=>localStorage.setItem(SAVE_KEY,JSON.stringify(profile));
+const save=()=>{localStorage.setItem(SAVE_KEY,JSON.stringify(profile));if(typeof firebaseUser!=='undefined'&&firebaseUser)syncPlayerStats(firebaseUser,{credits:profile.credits,selectedCar:profile.selectedCar,careerCompleted:Object.keys(profile.completed||{}).length}).catch(()=>{})};
 const audio=new AudioSystem();
+startAnalytics(profile.analytics!==false).then(()=>{setPlayerProperties({selected_car:profile.selectedCar,graphics_quality:profile.quality});});
+
+let deferredPrompt = null;
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+let firstLaunchResolved = isStandalone() || localStorage.getItem('vlFirstLaunchResolved') === '1';
+
+async function requestInstallOnFirstLaunch() {
+  if (isStandalone() || !deferredPrompt) return;
+  try {
+    trackEvent('install_prompt_opened', { source: 'first_launch' });
+    deferredPrompt.prompt();
+    const result = await deferredPrompt.userChoice;
+    trackEvent('install_prompt_result', { outcome: result.outcome, source: 'first_launch' });
+  } catch (error) {
+    console.info('Install prompt was not available:', error);
+  } finally {
+    deferredPrompt = null;
+  }
+}
 
 const app=$('#app');app.innerHTML=`
 <div id="game"></div><canvas id="minimap" width="190" height="130"></canvas>
@@ -29,6 +69,180 @@ const app=$('#app');app.innerHTML=`
 </div>
 <div id="countdown" class="countdown"></div><div id="toastZone"></div><div id="shell" class="menu"></div>`;
 const shell=$('#shell');
+let firebaseUser = null;
+let stopAdminWatch = null;
+let gameBooted = false;
+let phoneConfirmation = null;
+let phoneVerifier = null;
+
+function removeAccountGate(){
+  document.querySelector('#accountGate')?.remove();
+}
+
+function accountGate(content){
+  removeAccountGate();
+  const gate=document.createElement('div');
+  gate.id='accountGate';
+  gate.className='accountGate';
+  gate.innerHTML=`<div class="accountCard"><img class="accountLogo" src="${import.meta.env.BASE_URL}icons/icon-192.png" alt="Velocity Legends"><div class="accountBrand">VELOCITY LEGENDS</div>${content}</div>`;
+  document.body.append(gate);
+  return gate;
+}
+
+async function firstLaunchGate(next){
+  if(firstLaunchResolved || isStandalone()) return next();
+  const gate=accountGate(`<small>FIRST LAUNCH</small><h2>READY TO RACE?</h2><p>The game can be installed from your browser and then used like an app.</p><button class="button accountMain" id="continueFirstLaunch">CONTINUE</button>`);
+  gate.querySelector('#continueFirstLaunch').onclick=async()=>{
+    audio.resume();
+    await requestInstallOnFirstLaunch();
+    firstLaunchResolved=true;
+    localStorage.setItem('vlFirstLaunchResolved','1');
+    next();
+  };
+}
+
+function showFirebaseMissing(){
+  accountGate(`<small>SETUP REQUIRED</small><h2>FIREBASE NOT CONNECTED</h2><p>Add your Firebase values to the project environment before publishing this build.</p>`);
+}
+
+function showLogin(){
+  const gate=accountGate(`<small>PLAYER ACCOUNT</small><h2>SIGN IN TO PLAY</h2><p>Your game progress stays on this device. Your verified account lets the game identify your player profile.</p><button class="googleLogin" id="googleLogin"><span>G</span> CONTINUE WITH GOOGLE</button><div class="accountError" id="accountError"></div>`);
+  gate.querySelector('#googleLogin').onclick=async()=>{
+    const btn=gate.querySelector('#googleLogin'),err=gate.querySelector('#accountError');
+    btn.disabled=true;err.textContent='';
+    try{
+      const user=await signInGoogle();
+      firebaseUser=user;
+      setAnalyticsUser(user.uid);
+      await registerPlayer(user,isStandalone());
+      if(hasPhoneProvider(user)) finishAccountLogin(user); else showPhoneSetup(user);
+    }catch(error){
+      console.warn(error);
+      err.textContent=error?.code==='auth/popup-closed-by-user'?'Sign-in was cancelled.':'Google sign-in failed. Check Firebase Authentication setup.';
+      btn.disabled=false;
+    }
+  };
+}
+
+function normalizePhone(value){
+  const v=String(value||'').replace(/[\s()-]/g,'');
+  if(v.startsWith('+')) return v;
+  if(/^\d{10}$/.test(v)) return `+91${v}`;
+  return v;
+}
+
+function showPhoneSetup(user){
+  const gate=accountGate(`<small>ONE-TIME VERIFICATION</small><h2>VERIFY YOUR PHONE</h2><p>Signed in as <b>${user.email||'Google account'}</b>. Enter your mobile number and verify the OTP to finish your player account.</p><div class="phoneRow"><input id="phoneNumber" inputmode="tel" autocomplete="tel" placeholder="+91 98765 43210"><button class="button" id="sendOtp">SEND OTP</button></div><div id="recaptcha-container" class="recaptchaBox"></div><div class="otpRow" id="otpRow" hidden><input id="otpCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit OTP"><button class="button" id="verifyOtp">VERIFY</button></div><div class="accountError" id="accountError"></div><button class="accountLink" id="changeGoogle">Use a different Google account</button>`);
+  const errorBox=gate.querySelector('#accountError');
+  gate.querySelector('#changeGoogle').onclick=async()=>{await logoutPlayer();showLogin()};
+  gate.querySelector('#sendOtp').onclick=async()=>{
+    errorBox.textContent='';
+    const phone=normalizePhone(gate.querySelector('#phoneNumber').value);
+    if(!/^\+[1-9]\d{7,14}$/.test(phone)){errorBox.textContent='Enter a valid phone number with country code.';return}
+    const btn=gate.querySelector('#sendOtp');btn.disabled=true;
+    try{
+      if(phoneVerifier){try{phoneVerifier.clear()}catch{}}
+      phoneVerifier=createPhoneVerifier('recaptcha-container');
+      phoneConfirmation=await sendPhoneLinkCode(user,phone,phoneVerifier);
+      gate.querySelector('#otpRow').hidden=false;
+      gate.querySelector('#otpCode').focus();
+      btn.textContent='OTP SENT';
+    }catch(error){
+      console.warn(error);
+      errorBox.textContent=error?.code==='auth/credential-already-in-use'?'This phone number is already linked to another account.':'Could not send OTP. Check the number and Firebase Phone Authentication settings.';
+      btn.disabled=false;
+      btn.textContent='SEND OTP';
+      if(phoneVerifier){try{phoneVerifier.clear()}catch{}}
+      phoneVerifier=null;
+    }
+  };
+  gate.querySelector('#verifyOtp').onclick=async()=>{
+    const code=gate.querySelector('#otpCode').value.trim();
+    if(!/^\d{6}$/.test(code)){errorBox.textContent='Enter the 6-digit OTP.';return}
+    const btn=gate.querySelector('#verifyOtp');btn.disabled=true;errorBox.textContent='';
+    try{
+      const result=await phoneConfirmation.confirm(code);
+      firebaseUser=result.user;
+      await registerPlayer(firebaseUser,isStandalone());
+      finishAccountLogin(firebaseUser);
+    }catch(error){
+      console.warn(error);
+      errorBox.textContent='OTP verification failed. Try again.';
+      btn.disabled=false;
+    }
+  };
+}
+
+function showBlocked(){
+  state='blocked';
+  $('#hud').hidden=true;
+  $('#minimap').style.display='none';
+  shell.style.display='none';
+  accountGate(`<small>ACCOUNT STATUS</small><h2>ACCESS BLOCKED</h2><p>This player account has been blocked by the game administrator.</p><button class="button secondary" id="blockedLogout">SIGN OUT</button>`).querySelector('#blockedLogout').onclick=async()=>{await logoutPlayer();showLogin()};
+}
+
+function applyAdminControls(data={}){
+  if(data.blocked===true){showBlocked();return}
+  const grantId=String(data.creditGrantId||'').trim();
+  const grant=Number(data.creditGrant||0);
+  if(grantId && grantId!==profile.lastCreditGrantId && Number.isFinite(grant) && grant!==0){
+    profile.credits=Math.max(0,profile.credits+Math.round(grant));
+    profile.lastCreditGrantId=grantId;
+    save();
+    if(gameBooted) toast(`${grant>0?'+':''}${Math.round(grant)} ADMIN CREDITS`,'good');
+  }
+  if(state==='blocked') home();
+}
+
+function startAdminWatch(user){
+  stopAdminWatch?.();
+  stopAdminWatch=watchPlayerAdmin(user.uid,applyAdminControls,(error)=>console.warn('Player control sync failed:',error));
+}
+
+async function finishAccountLogin(user){
+  firebaseUser=user;
+  setAnalyticsUser(user.uid);
+  await registerPlayer(user,isStandalone()).catch(()=>{});
+  startAdminWatch(user);
+  removeAccountGate();
+  if(!gameBooted){
+    gameBooted=true;
+    home();
+    buildWorld(EVENTS[0]);
+    spawnRace();
+    $('#minimap').style.display='none';
+    animate(performance.now());
+  }else if(state==='blocked'){
+    home();
+  }
+}
+
+function accountScreen(){
+  const user=firebaseUser||currentPlayer();
+  const email=user?.email||'Not available';
+  const phone=user?.phoneNumber||'Not verified';
+  menuChrome('ACCOUNT',`<div class="accountPanel"><div class="accountAvatar">${user?.photoURL?`<img src="${user.photoURL}" alt="">`:'VL'}</div><div><small>PLAYER</small><h3>${user?.displayName||'Velocity Legends Player'}</h3><p>${email}</p><p>${phone}</p><p class="uidLine">UID ${user?.uid||'-'}</p></div></div><div class="resultBtns"><button class="button danger" id="logoutAccount">SIGN OUT</button><button class="button secondary" id="accountBack">← BACK</button></div>`);
+  $('#logoutAccount').onclick=async()=>{stopAdminWatch?.();stopAdminWatch=null;firebaseUser=null;await logoutPlayer();showLogin()};
+  $('#accountBack').onclick=settings;
+}
+
+function startAccountBoot(){
+  if(!firebaseConfigured()){showFirebaseMissing();return}
+  firstLaunchGate(()=>{
+    watchAuth(async(user)=>{
+      if(!user){firebaseUser=null;showLogin();return}
+      firebaseUser=user;
+      setAnalyticsUser(user.uid);
+      try{await registerPlayer(user,isStandalone())}catch{}
+      if(!hasPhoneProvider(user)){showPhoneSetup(user);return}
+      finishAccountLogin(user);
+    });
+  });
+  setInterval(async()=>{
+    if(!currentPlayer())return;
+    try{await refreshPlayerToken()}catch{stopAdminWatch?.();stopAdminWatch=null;firebaseUser=null;showLogin()}
+  },300000);
+}
 
 const carById=id=>CARS.find(c=>c.id===id)||CARS[0],eventById=id=>EVENTS.find(e=>e.id===id)||EVENTS[0], trackById=id=>TRACKS[id]||TRACKS.coast;
 const credits=()=>profile.credits.toLocaleString('en-IN');
@@ -42,33 +256,34 @@ function claimDaily(){const key=todayKey();if(profile.lastDaily===key)return fal
 function progressCount(){return Object.keys(profile.completed).length}
 function checkAchievements(stats={}){const tests={firstwin:progressCount()>=1,collector:profile.unlocked.length>=4,speed250:(stats.topSpeed||0)>=250,drifter:(stats.maxCombo||0)>=5,career5:progressCount()>=5,career15:progressCount()>=15};ACHIEVEMENTS.forEach(a=>{if(tests[a.id]&&!profile.achievements[a.id]){profile.achievements[a.id]=true;profile.credits+=a.reward;audio.reward();toast(`ACHIEVEMENT: ${a.name} +${a.reward} CR`,'good')}});save()}
 
-function home(){state='menu';claimDaily();const c={...carById(profile.selectedCar),color:carColor(profile.selectedCar)},done=progressCount();menuChrome('VELOCITY LEGENDS',`<div class="homeShowcase"><div class="homeNav"><button id="garage">▣ <span>GARAGE</span></button><button id="career">◆ <span>CAREER</span></button><button id="quick">◉ <span>QUICK RACE</span></button><button id="practice">∞ <span>ENDLESS</span></button><button id="ach">★ <span>ACHIEVEMENTS</span></button><button id="settings">⚙ <span>SETTINGS</span></button></div><div class="homeStage"><div id="home3d"></div><div class="homeCarName"><small>SELECTED • CLASS ${c.class}</small><b>${c.name}</b><span>WORLD TOUR ${done}/15 • GARAGE ${profile.unlocked.length}/12</span></div></div><aside class="homeEvents"><div class="eventPromo"><small>NEW CAR</small><b>${CARS[Math.min(profile.unlocked.length+2,CARS.length-1)].name}</b><span>Unlock through career progression</span></div><div class="eventPromo gold"><small>SPECIAL EVENT</small><b>LEGENDS TOUR</b><span>Win exclusive rewards</span></div><button class="playCareer" id="playCareer">PLAY <span>CAREER</span></button></aside></div><div class="homeFooter"><button id="help">⌨ <span>CONTROLS</span></button><span>HIGH-SPEED 3D ARCADE RACING</span><b>LV ${Math.max(1,done+1)}</b></div>`);mountHomePreview(c);$('#career').onclick=career;$('#playCareer').onclick=career;$('#quick').onclick=quickRace;$('#garage').onclick=garage;$('#ach').onclick=achievements;$('#settings').onclick=settings;$('#practice').onclick=endlessPractice;$('#help').onclick=help;audio.startMusic();}
-function career(){const chapters=[1,2,3,4];menuChrome('CAREER',`<div class="chapterTabs">${chapters.map(n=>`<button class="tab" data-ch="${n}">CHAPTER ${n}</button>`).join('')}</div><div id="careerEvents"></div><button class="button secondary" id="back">← BACK</button>`,'Win events to unlock the next challenge. Recommended class rises through the career.');
+function home(){state='menu';trackScreen('home');claimDaily();const c={...carById(profile.selectedCar),color:carColor(profile.selectedCar)},done=progressCount();menuChrome('VELOCITY LEGENDS',`<div class="homeShowcase"><div class="homeNav"><button id="garage">▣ <span>GARAGE</span></button><button id="career">◆ <span>CAREER</span></button><button id="quick">◉ <span>QUICK RACE</span></button><button id="practice">∞ <span>ENDLESS</span></button><button id="ach">★ <span>ACHIEVEMENTS</span></button><button id="settings">⚙ <span>SETTINGS</span></button></div><div class="homeStage"><div id="home3d"></div><div class="homeCarName"><small>SELECTED • CLASS ${c.class}</small><b>${c.name}</b><span>WORLD TOUR ${done}/15 • GARAGE ${profile.unlocked.length}/12</span></div></div><aside class="homeEvents"><div class="eventPromo"><small>NEW CAR</small><b>${CARS[Math.min(profile.unlocked.length+2,CARS.length-1)].name}</b><span>Unlock through career progression</span></div><div class="eventPromo gold"><small>SPECIAL EVENT</small><b>LEGENDS TOUR</b><span>Win exclusive rewards</span></div><button class="playCareer" id="playCareer">PLAY <span>CAREER</span></button></aside></div><div class="homeFooter"><button id="help">⌨ <span>CONTROLS</span></button><span>HIGH-SPEED 3D ARCADE RACING</span><b>LV ${Math.max(1,done+1)}</b></div>`);mountHomePreview(c);$('#career').onclick=career;$('#playCareer').onclick=career;$('#quick').onclick=quickRace;$('#garage').onclick=garage;$('#ach').onclick=achievements;$('#settings').onclick=settings;$('#practice').onclick=endlessPractice;$('#help').onclick=help;audio.startMusic();}
+function career(){trackScreen('career');trackEvent('career_opened',{completed_events:progressCount()});const chapters=[1,2,3,4];menuChrome('CAREER',`<div class="chapterTabs">${chapters.map(n=>`<button class="tab" data-ch="${n}">CHAPTER ${n}</button>`).join('')}</div><div id="careerEvents"></div><button class="button secondary" id="back">← BACK</button>`,'Win events to unlock the next challenge. Recommended class rises through the career.');
 function render(ch=1){$('#careerEvents').innerHTML=`<div class="eventList">${EVENTS.filter(e=>e.chapter===ch).map((e)=>{const idx=EVENTS.indexOf(e),unlocked=idx===0||profile.completed[EVENTS[idx-1].id],tr=trackById(e.track),req=CARS[e.recommended]?.class||'D';return `<button class="eventCard ${unlocked?'':'locked'}" data-event="${e.id}" ${unlocked?'':'disabled'}><small>${tr.name} • ${e.mode}</small><b>${e.name}</b><span>${e.laps} laps • ${e.ai} rivals • REC. ${req}</span><em>◈ ${e.reward} CR</em>${profile.completed[e.id]?'<strong>✓ CLEARED</strong>':unlocked?'<strong class="ready">READY</strong>':'<strong>LOCKED</strong>'}</button>`}).join('')}</div>`;$$('[data-event]').forEach(b=>b.onclick=()=>raceSetup(eventById(b.dataset.event)));}
 $$('[data-ch]').forEach(b=>b.onclick=()=>{$$('.tab').forEach(x=>x.classList.remove('active'));b.classList.add('active');render(+b.dataset.ch)});$('.tab').classList.add('active');render(1);$('#back').onclick=home;}
 
-function endlessPractice(){raceSetup({id:'practice',name:'Endless Practice',track:'practice',mode:'Practice',laps:999999,ai:0,reward:0,target:0,quick:true,endless:true});}
-function quickRace(){menuChrome('QUICK RACE',`<div class="trackGrid">${Object.entries(TRACKS).filter(([id])=>id!=='practice').map(([id,t])=>`<button class="trackCard" data-track="${id}" style="--accent:#${t.accent.toString(16).padStart(6,'0')}"><small>${t.weather.toUpperCase()}</small><b>${t.name}</b><span>${t.shape.toUpperCase()} CIRCUIT</span></button>`).join('')}<button class="trackCard" id="practiceCard" style="--accent:#54f6c7"><small>TRAINING</small><b>Endless Practice</b><span>NO RIVALS • NO MINIMAP • DRIVE FOREVER</span></button></div><div class="quickOptions"><label>MODE <select id="qmode"><option>Classic</option><option>Time Attack</option><option>Knockout</option></select></label><label>LAPS <select id="qlaps"><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label></div><button class="button secondary" id="back">← BACK</button>`,'Practice or race any environment without affecting career unlock order.');
+function endlessPractice(){trackEvent('practice_selected');raceSetup({id:'practice',name:'Endless Practice',track:'practice',mode:'Practice',laps:999999,ai:0,reward:0,target:0,quick:true,endless:true});}
+function quickRace(){trackScreen('quick_race');menuChrome('QUICK RACE',`<div class="trackGrid">${Object.entries(TRACKS).filter(([id])=>id!=='practice').map(([id,t])=>`<button class="trackCard" data-track="${id}" style="--accent:#${t.accent.toString(16).padStart(6,'0')}"><small>${t.weather.toUpperCase()}</small><b>${t.name}</b><span>${t.shape.toUpperCase()} CIRCUIT</span></button>`).join('')}<button class="trackCard" id="practiceCard" style="--accent:#54f6c7"><small>TRAINING</small><b>Endless Practice</b><span>NO RIVALS • NO MINIMAP • DRIVE FOREVER</span></button></div><div class="quickOptions"><label>MODE <select id="qmode"><option>Classic</option><option>Time Attack</option><option>Knockout</option></select></label><label>LAPS <select id="qlaps"><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label></div><button class="button secondary" id="back">← BACK</button>`,'Practice or race any environment without affecting career unlock order.');
 $$('[data-track]').forEach(b=>b.onclick=()=>{const mode=$('#qmode').value,laps=+$(' #qlaps'.trim()).value;raceSetup({id:'quick',name:`${trackById(b.dataset.track).name} Quick Race`,track:b.dataset.track,mode,laps,ai:6,reward:500,target:laps*36000,quick:true})});$('#practiceCard').onclick=endlessPractice;$('#back').onclick=home;}
 
 function garage(){
+ trackScreen('garage');
  state='garage';
  const selectedBase=carById(profile.selectedCar),selected={...selectedBase,color:carColor(selectedBase.id)},selectedOwned=profile.unlocked.includes(selected.id);
  const paintColors=[0xffffff,0x111318,0xff263f,0xff7a20,0xffd42a,0x24d970,0x15b8ff,0x3154ff,0x8e48ff,0xe23fd0,0xb9c2cc,0x7a2d15];
  menuChrome('GARAGE',`<div class="garageShowroom"><div class="showroomStage"><div id="garage3d" aria-label="3D preview of ${selected.name}"></div><div class="showroomFloor"></div><div class="showroomInfo"><small>${selected.style.toUpperCase()} • CLASS ${selected.class}</small><b>${selected.name}</b><span>Drag/rotate view automatically • Paint is saved per car</span></div></div><div class="paintPanel"><small>CUSTOMIZATION</small><h3>BODY PAINT</h3><div class="paintSwatches">${paintColors.map(v=>`<button class="paintSwatch ${v===selected.color?'active':''}" data-paint="${v}" style="--paint:#${v.toString(16).padStart(6,'0')}" ${selectedOwned?'':'disabled'} aria-label="Change paint"></button>`).join('')}</div><label class="customPaint">CUSTOM COLOR <input id="customPaint" type="color" value="#${selected.color.toString(16).padStart(6,'0')}" ${selectedOwned?'':'disabled'}></label><button class="button" id="upgradeSelected" ${selectedOwned?'':'disabled'}>TUNE SELECTED CAR</button></div></div><div class="carGrid">${CARS.map(c=>{const own=profile.unlocked.includes(c.id),sel=profile.selectedCar===c.id,u=ensureUpgrade(c.id),col=carColor(c.id);return `<div class="carCard ${sel?'selected':''}"><div class="classBadge">${c.class}</div><div class="carPreview ${c.style}" style="--car:#${col.toString(16).padStart(6,'0')}"><i></i><span class="wheel w1"></span><span class="wheel w2"></span></div><small>${own?'OWNED':'LOCKED'} • ${(c.style||'GT').toUpperCase()} • TUNE ${u.engine+u.handling+u.nitro}/15</small><b>${c.name}</b><div class="stats"><span>TOP<i style="width:${Math.min(100,c.top/74*100)}%"></i></span><span>ACC<i style="width:${Math.min(100,c.accel/41*100)}%"></i></span><span>HAND<i style="width:${Math.min(100,c.handling/1.5*100)}%"></i></span><span>N₂O<i style="width:${Math.min(100,c.nitro/1.35*100)}%"></i></span></div><button class="button carAction" data-car="${c.id}">${sel?'SELECTED':own?'SELECT':'BUY ◈ '+c.price.toLocaleString('en-IN')}</button></div>`}).join('')}</div><button class="button secondary" id="back">← BACK</button>`);
  mountGaragePreview(selected);
- $$('[data-car]').forEach(b=>b.onclick=()=>{audio.resume();const c=carById(b.dataset.car);if(profile.unlocked.includes(c.id)){profile.selectedCar=c.id;save();garage()}else if(profile.credits>=c.price){profile.credits-=c.price;profile.unlocked.push(c.id);profile.selectedCar=c.id;save();checkAchievements();audio.reward();garage()}else toast('NOT ENOUGH CREDITS','bad')});
- $$('[data-paint]').forEach(b=>b.onclick=()=>{if(!selectedOwned)return;profile.carColors[selected.id]=Number(b.dataset.paint);save();audio.tone?.(420,.08,'sine',.035,80);garage()});
- const custom=$('#customPaint');if(custom)custom.oninput=e=>{if(!selectedOwned)return;profile.carColors[selected.id]=parseInt(e.target.value.slice(1),16);save();updateGaragePreviewPaint(profile.carColors[selected.id]);};if(custom)custom.onchange=()=>garage();
+ $$('[data-car]').forEach(b=>b.onclick=()=>{audio.resume();const c=carById(b.dataset.car);if(profile.unlocked.includes(c.id)){profile.selectedCar=c.id;save();setPlayerProperties({selected_car:c.id});trackEvent('car_selected',{car_id:c.id,car_name:c.name,car_class:c.class});garage()}else if(profile.credits>=c.price){profile.credits-=c.price;profile.unlocked.push(c.id);profile.selectedCar=c.id;save();setPlayerProperties({selected_car:c.id});trackEvent('car_purchased',{car_id:c.id,car_name:c.name,car_class:c.class,price:c.price});checkAchievements();audio.reward();garage()}else toast('NOT ENOUGH CREDITS','bad')});
+ $$('[data-paint]').forEach(b=>b.onclick=()=>{if(!selectedOwned)return;profile.carColors[selected.id]=Number(b.dataset.paint);save();trackEvent('car_paint_changed',{car_id:selected.id,paint:profile.carColors[selected.id].toString(16)});audio.tone?.(420,.08,'sine',.035,80);garage()});
+ const custom=$('#customPaint');if(custom)custom.oninput=e=>{if(!selectedOwned)return;profile.carColors[selected.id]=parseInt(e.target.value.slice(1),16);save();trackEvent('car_paint_changed',{car_id:selected.id,paint:e.target.value});updateGaragePreviewPaint(profile.carColors[selected.id]);};if(custom)custom.onchange=()=>garage();
  $('#upgradeSelected').onclick=()=>upgrades(profile.selectedCar);$('#back').onclick=home;
 }
 function upgrades(id){const c=carById(id),u=ensureUpgrade(id);menuChrome('TUNING',`<div class="tuningHero"><div class="carPreview giant" style="--car:#${carColor(c.id).toString(16).padStart(6,'0')}"><i></i></div><div><small>${c.class} CLASS</small><h3>${c.name}</h3><p>Each system can be upgraded five times.</p></div></div><div class="upgradeGrid">${UPGRADE_KEYS.map(k=>{const l=u[k],cost=upgradeCost(l);return `<div class="upgradeCard"><small>${k.toUpperCase()}</small><b>LEVEL ${l}/5</b><div class="upgradePips">${[0,1,2,3,4].map(x=>`<i class="${x<l?'on':''}"></i>`).join('')}</div><button class="button" data-up="${k}" ${l>=5?'disabled':''}>${l>=5?'MAXED':'UPGRADE ◈ '+cost}</button></div>`}).join('')}</div><button class="button secondary" id="back">← GARAGE</button>`);
 $$('[data-up]').forEach(b=>b.onclick=()=>{const key=b.dataset.up,l=u[key],cost=upgradeCost(l);if(l>=5)return;if(profile.credits<cost)return toast('NOT ENOUGH CREDITS','bad');profile.credits-=cost;u[key]++;save();audio.reward();upgrades(id)});$('#back').onclick=garage;}
 
-function achievements(){menuChrome('ACHIEVEMENTS',`<div class="achievementList">${ACHIEVEMENTS.map(a=>`<div class="achievement ${profile.achievements[a.id]?'earned':''}"><div><small>${profile.achievements[a.id]?'✓ EARNED':'CHALLENGE'}</small><b>${a.name}</b><span>${a.desc}</span></div><em>◈ ${a.reward} CR</em></div>`).join('')}</div><button class="button secondary" id="back">← BACK</button>`);$('#back').onclick=home;}
-function settings(){menuChrome('SETTINGS',`<div class="settingRows"><label>Sound Effects <button class="button secondary" id="sound">${profile.sound?'ON':'OFF'}</button></label><label>Music <button class="button secondary" id="music">${profile.music?'ON':'OFF'}</button></label><label>Graphics <select id="quality"><option value="high">HIGH</option><option value="medium">MEDIUM</option><option value="low">LOW</option></select></label><label>Camera <select id="cameraSet"><option value="dynamic">DYNAMIC</option><option value="close">CLOSE</option><option value="far">FAR</option></select></label><label>Reset Progress <button class="button danger" id="reset">RESET SAVE</button></label></div><button class="button secondary" id="back">← BACK</button>`);$('#quality').value=profile.quality;$('#cameraSet').value=profile.camera;$('#sound').onclick=()=>{profile.sound=!profile.sound;save();audio.setEnabled(profile.sound);settings()};$('#music').onclick=()=>{profile.music=!profile.music;save();profile.music?audio.startMusic():audio.stopMusic();settings()};$('#quality').onchange=e=>{profile.quality=e.target.value;save();applyQuality()};$('#cameraSet').onchange=e=>{profile.camera=e.target.value;save()};$('#reset').onclick=()=>{if(confirm('Reset all cars, upgrades, career progress and credits?')){profile=structuredClone(fresh);save();home()}};$('#back').onclick=home;}
-function help(){menuChrome('CONTROLS',`<div class="helpGrid"><div class="helpCard"><b>KEYBOARD</b><span>W / ↑ — Accelerate</span><span>S / ↓ — Brake / Reverse</span><span>A D / ← → — Steer</span><span>SPACE — Drift</span><span>SHIFT — Nitro</span><span>ESC — Pause</span><span>R — Restart</span></div><div class="helpCard"><b>GAMEPAD</b><span>Left Stick — Steer</span><span>RT / A — Accelerate</span><span>LT / B — Brake</span><span>X — Drift</span><span>LB / RB — Nitro</span><span>Start — Pause</span></div><div class="helpCard"><b>MOBILE</b><span>On-screen steering</span><span>Throttle + brake</span><span>Dedicated DRIFT button</span><span>N₂O boost button</span><span>Landscape recommended</span></div></div><button class="button secondary" id="back">← BACK</button>`);$('#back').onclick=home;}
-function raceSetup(e){const c=tunedCar(profile.selectedCar),tr=trackById(e.track);menuChrome('RACE READY',`<div class="setupGrid"><div class="setupTrack" style="--accent:#${tr.accent.toString(16).padStart(6,'0')}"><small>${e.mode.toUpperCase()}</small><b>${e.name}</b><span>${tr.name} • ${e.laps} LAPS • ${e.ai} RIVALS</span><em>${tr.weather.toUpperCase()}</em></div><div class="setupCar"><small>YOUR CAR • CLASS ${c.class}</small><b>${c.name}</b><span>TOP ${Math.round(c.top*6.2)} KM/H • TUNED</span><button class="button secondary" id="changeCar">CHANGE CAR</button></div></div><div class="raceBrief"><b>OBJECTIVE</b><span>${e.mode==='Time Attack'?`Beat ${formatTime(e.target)}`:e.mode==='Knockout'?'Stay out of last place at every elimination':'Finish in 1st place'}</span></div><button class="button huge" id="start">START RACE</button><button class="button secondary" id="back">← BACK</button>`);$('#start').onclick=()=>startRace(e);$('#changeCar').onclick=garage;$('#back').onclick=e.quick?quickRace:career;}
+function achievements(){trackScreen('achievements');menuChrome('ACHIEVEMENTS',`<div class="achievementList">${ACHIEVEMENTS.map(a=>`<div class="achievement ${profile.achievements[a.id]?'earned':''}"><div><small>${profile.achievements[a.id]?'✓ EARNED':'CHALLENGE'}</small><b>${a.name}</b><span>${a.desc}</span></div><em>◈ ${a.reward} CR</em></div>`).join('')}</div><button class="button secondary" id="back">← BACK</button>`);$('#back').onclick=home;}
+function settings(){trackScreen('settings');menuChrome('SETTINGS',`<div class="settingRows"><label>Sound Effects <button class="button secondary" id="sound">${profile.sound?'ON':'OFF'}</button></label><label>Music <button class="button secondary" id="music">${profile.music?'ON':'OFF'}</button></label><label>Graphics <select id="quality"><option value="high">HIGH</option><option value="medium">MEDIUM</option><option value="low">LOW</option></select></label><label>Camera <select id="cameraSet"><option value="dynamic">DYNAMIC</option><option value="close">CLOSE</option><option value="far">FAR</option></select></label><label>Usage Analytics <button class="button secondary" id="analyticsToggle">${profile.analytics!==false?'ON':'OFF'}</button></label><label>Account <button class="button secondary" id="accountBtn">ACCOUNT</button></label><label>Reset Progress <button class="button danger" id="reset">RESET SAVE</button></label></div><button class="button secondary" id="back">← BACK</button>`);$('#quality').value=profile.quality;$('#cameraSet').value=profile.camera;$('#sound').onclick=()=>{profile.sound=!profile.sound;save();audio.setEnabled(profile.sound);settings()};$('#music').onclick=()=>{profile.music=!profile.music;save();profile.music?audio.startMusic():audio.stopMusic();settings()};$('#quality').onchange=e=>{profile.quality=e.target.value;save();applyQuality()};$('#cameraSet').onchange=e=>{profile.camera=e.target.value;save()};$('#analyticsToggle').onclick=()=>{profile.analytics=profile.analytics===false;save();setAnalyticsEnabled(profile.analytics);settings()};$('#accountBtn').onclick=accountScreen;$('#reset').onclick=()=>{if(confirm('Reset all cars, upgrades, career progress and credits?')){profile=structuredClone(fresh);save();home()}};$('#back').onclick=home;}
+function help(){trackScreen('controls');menuChrome('CONTROLS',`<div class="helpGrid"><div class="helpCard"><b>KEYBOARD</b><span>W / ↑ — Accelerate</span><span>S / ↓ — Brake / Reverse</span><span>A D / ← → — Steer</span><span>SPACE — Drift</span><span>SHIFT — Nitro</span><span>ESC — Pause</span><span>R — Restart</span></div><div class="helpCard"><b>GAMEPAD</b><span>Left Stick — Steer</span><span>RT / A — Accelerate</span><span>LT / B — Brake</span><span>X — Drift</span><span>LB / RB — Nitro</span><span>Start — Pause</span></div><div class="helpCard"><b>MOBILE</b><span>On-screen steering</span><span>Throttle + brake</span><span>Dedicated DRIFT button</span><span>N₂O boost button</span><span>Landscape recommended</span></div></div><button class="button secondary" id="back">← BACK</button>`);$('#back').onclick=home;}
+function raceSetup(e){trackScreen('race_setup');const c=tunedCar(profile.selectedCar),tr=trackById(e.track);menuChrome('RACE READY',`<div class="setupGrid"><div class="setupTrack" style="--accent:#${tr.accent.toString(16).padStart(6,'0')}"><small>${e.mode.toUpperCase()}</small><b>${e.name}</b><span>${tr.name} • ${e.laps} LAPS • ${e.ai} RIVALS</span><em>${tr.weather.toUpperCase()}</em></div><div class="setupCar"><small>YOUR CAR • CLASS ${c.class}</small><b>${c.name}</b><span>TOP ${Math.round(c.top*6.2)} KM/H • TUNED</span><button class="button secondary" id="changeCar">CHANGE CAR</button></div></div><div class="raceBrief"><b>OBJECTIVE</b><span>${e.mode==='Time Attack'?`Beat ${formatTime(e.target)}`:e.mode==='Knockout'?'Stay out of last place at every elimination':'Finish in 1st place'}</span></div><button class="button huge" id="start">START RACE</button><button class="button secondary" id="back">← BACK</button>`);$('#start').onclick=()=>startRace(e);$('#changeCar').onclick=garage;$('#back').onclick=e.quick?quickRace:career;}
 
 // ----- HOME 3D HERO -----
 let homePreview=null;
@@ -181,7 +396,7 @@ $('#stuntBtn').addEventListener('pointerdown',e=>{e.preventDefault();audio.resum
 $('#pauseBtn').onclick=togglePause;
 function gamepad(){const g=navigator.getGamepads?.()[0];if(!g)return null;return{steer:Math.abs(g.axes[0])>.12?g.axes[0]:0,gas:g.buttons[7]?.value||g.buttons[0]?.value||0,brake:g.buttons[6]?.value||g.buttons[1]?.value||0,boost:g.buttons[4]?.pressed||g.buttons[5]?.pressed,drift:g.buttons[2]?.pressed,stunt:g.buttons[3]?.pressed,pause:g.buttons[9]?.pressed}}
 function nearestTrack(pos){let best=0,bd=Infinity;for(let i=0;i<trackSamples.length;i++){const d=trackSamples[i].distanceToSquared(pos);if(d<bd){bd=d;best=i}}return{t:best/(trackSamples.length-1),point:trackSamples[best],dist:Math.sqrt(bd)}}
-function startRace(e){audio.resume();audio.stopMusic();currentEvent=e;buildWorld(e);spawnRace();shell.style.display='none';$('#hud').hidden=false;$('#minimap').style.display=e.endless?'none':'block';restartRace();}
+function startRace(e){trackEvent('race_started',{event_id:e.id,mode:e.mode,track:e.track,car_id:profile.selectedCar,rivals:e.ai,endless:Boolean(e.endless)});audio.resume();audio.stopMusic();currentEvent=e;buildWorld(e);spawnRace();shell.style.display='none';$('#hud').hidden=false;$('#minimap').style.display=e.endless?'none':'block';restartRace();}
 function restartRace(){spawnRace();raceStart=performance.now();countdownUntil=raceStart+COUNTDOWN_MS;knockoutClock=raceStart+20000;eliminated=[];state='countdown';cameraShake=0;boostPulse=0;$('#countdown').textContent='3';$('#stunt').textContent='';$('#knockdowns').textContent='';$('#objective').textContent=currentEvent.endless?'FREE DRIVE • NO FINISH':currentEvent.mode==='Time Attack'?`TARGET ${formatTime(currentEvent.target)}`:currentEvent.mode==='Knockout'?'LAST PLACE ELIMINATED EVERY 20s':'FINISH 1ST';audio.countdown(3)}
 function togglePause(){if(state==='paused'){state='race';shell.style.display='none';$('#hud').hidden=false;raceStart+=performance.now()-pauseStamp;knockoutClock+=performance.now()-pauseStamp;audio.resume();return}if(!['race','countdown'].includes(state))return;pauseStamp=performance.now();state='paused';$('#hud').hidden=true;menuChrome('PAUSED',`<div class="pauseMenu"><button class="button huge" id="resume">RESUME</button><button class="button secondary" id="restart">RESTART RACE</button><button class="button secondary" id="quit">QUIT TO HOME</button></div>`);$('#resume').onclick=togglePause;$('#restart').onclick=()=>{shell.style.display='none';$('#hud').hidden=false;restartRace()};$('#quit').onclick=()=>{state='menu';$('#hud').hidden=true;$('#minimap').style.display='none';home()}}
 let pauseStamp=0,lastPadStunt=false;
@@ -230,7 +445,7 @@ function updateAI(dt,now){ai.forEach((a,i)=>{if(eliminated.includes(a)){a.mesh.v
 
 function getPosition(){if(!player)return 1;const list=[{p:player.progress,who:'p'},...ai.filter(a=>!eliminated.includes(a)).map(a=>({p:(a.lap-1)+a.t,who:a}))].sort((a,b)=>b.p-a.p);return list.findIndex(x=>x.who==='p')+1}
 function knockout(now){if(currentEvent.mode!=='Knockout'||now<knockoutClock)return;knockoutClock=now+20000;const alive=ai.filter(a=>!eliminated.includes(a));if(!alive.length)return;const all=[{who:'p',p:player.progress},...alive.map(a=>({who:a,p:(a.lap-1)+a.t}))].sort((a,b)=>b.p-a.p);const last=all.at(-1).who;if(last==='p')finishRace(true);else{eliminated.push(last);audio.tone(320,.18,'square',.08,-100);toast('RIVAL ELIMINATED','good')}}
-function finishRace(knocked=false){if(state==='finished')return;state='finished';player.finished=true;finishAt=performance.now();const elapsed=finishAt-countdownUntil,place=getPosition();const success=!knocked&&(currentEvent.mode==='Time Attack'?elapsed<=currentEvent.target:currentEvent.mode==='Knockout'?place===1:place===1);let reward=currentEvent.quick?Math.max(300,success?500:250):(success?currentEvent.reward:Math.max(250,Math.round(currentEvent.reward*.2)));reward+=Math.round(player.maxCombo*45)+player.stunts*90+player.knockdowns*140;profile.credits+=reward;if(success&&!currentEvent.quick)profile.completed[currentEvent.id]=true;if(!currentEvent.quick)profile.best[currentEvent.id]=Math.min(profile.best[currentEvent.id]||Infinity,elapsed);save();checkAchievements({topSpeed:player.topSpeed,maxCombo:player.maxCombo});setTimeout(()=>results(success,place,elapsed,reward,knocked),450)}
+function finishRace(knocked=false){if(state==='finished')return;state='finished';player.finished=true;finishAt=performance.now();const elapsed=finishAt-countdownUntil,place=getPosition();const success=!knocked&&(currentEvent.mode==='Time Attack'?elapsed<=currentEvent.target:currentEvent.mode==='Knockout'?place===1:place===1);trackEvent('race_completed',{event_id:currentEvent.id,mode:currentEvent.mode,track:currentEvent.track,car_id:profile.selectedCar,position:place,success,elapsed_ms:Math.round(elapsed),top_speed:Math.round(player.topSpeed),stunts:player.stunts,knockdowns:player.knockdowns});let reward=currentEvent.quick?Math.max(300,success?500:250):(success?currentEvent.reward:Math.max(250,Math.round(currentEvent.reward*.2)));reward+=Math.round(player.maxCombo*45)+player.stunts*90+player.knockdowns*140;profile.credits+=reward;if(success&&!currentEvent.quick)profile.completed[currentEvent.id]=true;if(!currentEvent.quick)profile.best[currentEvent.id]=Math.min(profile.best[currentEvent.id]||Infinity,elapsed);save();checkAchievements({topSpeed:player.topSpeed,maxCombo:player.maxCombo});setTimeout(()=>results(success,place,elapsed,reward,knocked),450)}
 function results(success,place,elapsed,reward,knocked){$('#hud').hidden=true;$('#minimap').style.display='none';audio.engineSpeed(0);audio.reward();menuChrome(success?'VICTORY':'RACE COMPLETE',`<div class="resultHero ${success?'win':''}"><div><small>${currentEvent.mode.toUpperCase()}</small><b>${knocked?'KNOCKED OUT':currentEvent.name}</b></div><span>${formatTime(elapsed)}</span></div><div class="grid four"><div class="card"><small>POSITION</small><b>${place} / ${currentEvent.ai+1}</b></div><div class="card"><small>TOP SPEED</small><b>${Math.round(player.topSpeed)} km/h</b></div><div class="card"><small>STUNTS / KOs</small><b>${player.stunts} / ${player.knockdowns}</b></div><div class="card"><small>REWARD</small><b>+${reward} CR</b></div></div><div class="resultBtns"><button class="button" id="again">RACE AGAIN</button>${!currentEvent.quick?'<button class="button" id="next">NEXT EVENT</button>':''}<button class="button secondary" id="homeBtn">HOME</button></div>`);$('#again').onclick=()=>startRace(currentEvent);$('#homeBtn').onclick=home;if($('#next'))$('#next').onclick=()=>{const i=EVENTS.findIndex(e=>e.id===currentEvent.id);raceSetup(EVENTS[Math.min(EVENTS.length-1,i+1)])};}
 function updateCamera(dt){if(!player)return;const f=new THREE.Vector3(Math.sin(player.angle),0,Math.cos(player.angle)),speed=Math.abs(player.speed),cfg=profile.camera==='close'?{back:9,height:5.2}:profile.camera==='far'?{back:17,height:9}:{back:13,height:7.1};const driftSide=new THREE.Vector3(f.z,0,-f.x).multiplyScalar(player.drift>3?Math.sin(performance.now()*.018)*.68:0),desired=player.mesh.position.clone().addScaledVector(f,-cfg.back-speed*.032).add(new THREE.Vector3(0,cfg.height+speed*.023,0)).add(driftSide);camera.position.lerp(desired,1-Math.pow(.0015,dt));cameraShake=Math.max(0,cameraShake-dt*2.2);if(cameraShake>0){camera.position.x+=(Math.random()-.5)*cameraShake;camera.position.y+=(Math.random()-.5)*cameraShake*.55;camera.position.z+=(Math.random()-.5)*cameraShake}camera.lookAt(player.mesh.position.clone().addScaledVector(f,8+speed*.06).add(new THREE.Vector3(0,1.35,0)));camera.fov=lerp(camera.fov,65+Math.min(speed,75)*.25+(player.shock?7:0),dt*6);camera.updateProjectionMatrix();$('.speedlines').style.opacity=player.shock?'.92':speed>44?'.32':'0';$('.chromatic').style.opacity=player.shock?'.75':speed>55?'.18':'0';document.documentElement.style.setProperty('--boost',player.shock?'1':'0')}
 function formatTime(ms){ms=Math.max(0,ms||0);const m=Math.floor(ms/60000),s=Math.floor(ms/1000)%60,x=Math.floor(ms%1000);return`${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${String(x).padStart(3,'0')}`}
@@ -239,5 +454,5 @@ function drawMinimap(){const c=$('#minimap'),ctx=c.getContext('2d'),w=c.width,h=
 function weatherTick(dt){if(!weatherParticles)return;const arr=weatherParticles.geometry.attributes.position.array,weather=trackById(currentEvent.track).weather;for(let i=0;i<arr.length;i+=3){arr[i+1]-=dt*(weather==='snow'?7:weather==='dust'?2:45);if(arr[i+1]<0)arr[i+1]=90;if(weather==='dust')arr[i]+=dt*7}weatherParticles.geometry.attributes.position.needsUpdate=true;if(player)weatherParticles.position.x=player.mesh.position.x*.15,weatherParticles.position.z=player.mesh.position.z*.15}
 function animate(now){requestAnimationFrame(animate);if(state==='garage')renderGaragePreview(now);if(state==='menu'&&homePreview)renderHomePreview(now);const dt=Math.min(.035,(now-prev)/1000);prev=now;if(state==='countdown'){const rem=countdownUntil-now;$('.cinematicBars').classList.add('on');if(rem<=0){state='race';$('.cinematicBars').classList.remove('on');settleCarOnRoad(player.mesh,0,true);ai.forEach(a=>settleCarOnRoad(a.mesh,0,true));updateStartLights(0);$('#countdown').textContent='GO!';audio.countdown(0);audio.engineSpeed(0);cameraShake=.38;setTimeout(()=>$('#countdown').textContent='',560)}else{const n=Math.min(3,Math.ceil(rem/1000));if($('#countdown').textContent!==String(n)){audio.countdown(n);$('#countdown').textContent=n}updateGridAnimation(dt,now,rem)}}else if(state==='race'){updatePlayer(dt,now);updateAI(dt,now);knockout(now);hud(now)}if(state==='countdown')updateStartCamera(dt,now,countdownUntil-now);else if(state!=='paused')updateCamera(dt);weatherTick(dt);updateEnvironmentVisuals(world,dt,now);vfx.update(dt);pickups.forEach((p,i)=>{if(!p.taken){p.mesh.rotation.y+=dt*2.2;p.mesh.rotation.x+=dt*.8;p.mesh.position.y=1.35+Math.sin(now*.004+i)*.28}});if(profile.quality==='low')renderer.render(scene,camera);else composer.render()}
 function applyQuality(){const q=profile.quality;renderer.setPixelRatio(Math.min(devicePixelRatio,q==='high'?1.65:q==='medium'?1.2:1));renderer.shadowMap.enabled=q!=='low';sun.shadow.mapSize.set(q==='high'?2048:1024,q==='high'?2048:1024)}applyQuality();audio.setEnabled(profile.sound);
-addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);bloom.resolution.set(innerWidth,innerHeight)});let deferredPrompt;addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e});if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});window.addEventListener('contextmenu',e=>e.preventDefault());addEventListener('pointerdown',()=>audio.resume(),{once:true});
-home();buildWorld(EVENTS[0]);spawnRace();$('#minimap').style.display='none';animate(performance.now());
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);bloom.resolution.set(innerWidth,innerHeight)});addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;trackEvent('install_available')});addEventListener('appinstalled',()=>{deferredPrompt=null;firstLaunchResolved=true;localStorage.setItem('vlFirstLaunchResolved','1');trackEvent('pwa_installed');const u=currentPlayer();if(u)markInstalled(u).catch(()=>{});if($('#toastZone'))toast('VELOCITY LEGENDS INSTALLED','good')});if('serviceWorker'in navigator)navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(()=>{});window.addEventListener('contextmenu',e=>e.preventDefault());addEventListener('pointerdown',()=>audio.resume(),{once:true});
+startAccountBoot();

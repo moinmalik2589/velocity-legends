@@ -1,61 +1,44 @@
-# Velocity Legends — World Tour Edition
+# Velocity Legends
 
-Original arcade-racing web game inspired by the speed, stunt and presentation language of modern mobile arcade racers. It does **not** contain Asphalt/Gameloft branding, licensed cars, copied tracks, UI art, sounds, or proprietary assets.
+Velocity Legends is my browser-based 3D arcade racing game built with Three.js and Vite.
 
-## Major systems
-- 12 original cars across D/C/B/A/S/S+ classes with individual silhouettes and tuning
-- 15-event career, quick race, Classic / Time Attack / Knockout
-- 6 long circuits with coast, harbor, canyon, neon city, alpine and storm environments
-- Long straights separated by corner complexes
-- Cinematic 3-2-1 grid start; all AI physically locked until GO
-- Nitro, Perfect Nitro and Shockwave boost presentation
-- Drift combos and nitro regeneration
-- Ramps, airtime, 360 spins, barrel-roll ramps, stunt rewards
-- Shockwave/stunt knockdowns with crash animation, sparks and smoke
-- AI nitro trails and recovery after knockdowns
-- Dynamic chase camera, speed FOV, camera shake, cinematic bars
-- Bloom post-processing on Medium/High graphics
-- Weather, wet surfaces, street lights, grandstands, event gates and fictional track branding
-- Synthesized engine, wind, crash, nitro, stunt, knockdown and menu audio
-- Mobile touch, keyboard and Gamepad API controls
-- Garage purchase, per-car upgrades, credits, achievements, daily rewards, persistent local save
-- PWA + Capacitor Android project
+## Run it
 
-## Controls
-W / Up = accelerate
-S / Down = brake/reverse
-A,D / Left,Right = steer
-Space = drift
-Double-tap Drift or E = 360 spin
-Shift = nitro
-R = restart
-Esc = pause
-
-## Run
+```bash
 npm install
 npm run dev
+```
 
-Open http://localhost:1807
+Local URL:
 
-## Asset / reference policy
-The shipped race world and vehicle meshes are original procedural geometry and generated textures, so the build is self-contained. CC0 asset sources suitable for later optional model replacement include Kenney and Quaternius. No proprietary Asphalt assets are included.
+```text
+http://localhost:1807
+```
 
+## Build
 
-## RoadLife / Stability Pass
+```bash
+npm run build
+```
 
-This build adds the requested race-engine fixes and realism pass:
+## GitHub Pages
 
-- Full-track scenery clearance so mountains, buildings, rocks and trees cannot be spawned across another road segment.
-- Strong four-wheel landing recovery after ramps/barrel rolls so the player car cannot remain stuck leaning on two tyres.
-- Sustained AI pace model with per-rival base/max pace and mild race-position adaptation instead of progressive slowdown.
-- Dedicated Endless Practice mode with no rivals, no finish condition and no minimap.
-- Larger dedicated practice circuit for uninterrupted driving.
-- Animated vegetation sway, moving water surface response, flickering city-window illumination and steering front wheels.
-- Existing cinematic start, stunt, nitro, knockdown, career, garage and long-circuit systems remain intact.
+The repository is set up for GitHub Pages under:
 
+```text
+/velocity-legends/
+```
 
-## Grounded Snow 5.1 fixes
-- Alpine Rush contrast rebuilt: darker asphalt/shoulders, blue-grey snow, reduced fog washout, darker mountains and muted snowfall.
-- Per-car tyre-contact ride height: each body family sits on its actual wheel radius instead of one shared Y value.
-- Jump landing is now height/velocity driven, so gravity cannot stop while the car is still above the road.
-- Grounded cars continuously settle back to their correct tyre-contact height.
+Push to `main` and the GitHub Actions workflow builds and deploys the `dist` folder.
+
+## Player accounts
+
+The published version uses Firebase Authentication. A new player signs in with Google and verifies a phone number once by OTP. Firebase stores the account record and the game listens for my admin controls.
+
+See `FIREBASE_SETUP.md` for the setup and the fields I use to block users or give credits.
+
+## Install behaviour
+
+There is no Install button in the game menu. On the first browser launch, the game uses the browser's native PWA install prompt when it is available. The browser still controls the final install confirmation.
+
+After installation the app uses the icon files in `public/icons` and opens in fullscreen landscape mode.
