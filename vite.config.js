@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+    base: "/Velocity-Legends/",
     server: {
         port: 1807,
         strictPort: true
