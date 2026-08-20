@@ -1,4 +1,4 @@
-const CACHE = 'velocity-legends-pwa-v6';
+const CACHE = 'velocity-legends-pwa-v7';
 const BASE = new URL('./', self.registration.scope).pathname;
 const SHELL = [
   BASE,
