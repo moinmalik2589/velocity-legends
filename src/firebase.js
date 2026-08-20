@@ -59,13 +59,8 @@ function ensureFirebase() {
     app = getApps().length ? getApp() : initializeApp(firebaseConfig);
   }
 
-  if (!auth) {
-    auth = getAuth(app);
-  }
-
-  if (!db) {
-    db = getFirestore(app);
-  }
+  if (!auth) auth = getAuth(app);
+  if (!db) db = getFirestore(app);
 
   return true;
 }
@@ -77,22 +72,13 @@ export function firebaseConfigured() {
 export async function startAnalytics(collectionEnabled = true) {
   analyticsEnabled = Boolean(collectionEnabled);
 
-  if (!ensureFirebase() || !firebaseConfig.measurementId) {
-    return false;
-  }
+  if (!ensureFirebase() || !firebaseConfig.measurementId) return false;
 
   try {
-    if (!(await isSupported())) {
-      return false;
-    }
+    if (!(await isSupported())) return false;
 
     analytics = getAnalytics(app);
-
-    setAnalyticsCollectionEnabled(
-      analytics,
-      analyticsEnabled
-    );
-
+    setAnalyticsCollectionEnabled(analytics, analyticsEnabled);
     analyticsReady = true;
 
     if (analyticsEnabled) {
@@ -101,11 +87,7 @@ export async function startAnalytics(collectionEnabled = true) {
 
     return true;
   } catch (error) {
-    console.warn(
-      'Analytics could not start:',
-      error
-    );
-
+    console.warn('Analytics could not start:', error);
     return false;
   }
 }
@@ -114,22 +96,12 @@ export function setAnalyticsEnabled(value) {
   analyticsEnabled = Boolean(value);
 
   if (analytics) {
-    setAnalyticsCollectionEnabled(
-      analytics,
-      analyticsEnabled
-    );
+    setAnalyticsCollectionEnabled(analytics, analyticsEnabled);
   }
 }
 
 export function trackEvent(name, params = {}) {
-  if (
-    !analyticsReady ||
-    !analyticsEnabled ||
-    !analytics
-  ) {
-    return;
-  }
-
+  if (!analyticsReady || !analyticsEnabled || !analytics) return;
   logEvent(analytics, name, params);
 }
 
@@ -141,30 +113,12 @@ export function trackScreen(screenName) {
 }
 
 export function setPlayerProperties(properties = {}) {
-  if (
-    !analyticsReady ||
-    !analyticsEnabled ||
-    !analytics
-  ) {
-    return;
-  }
-
-  setUserProperties(
-    analytics,
-    properties
-  );
+  if (!analyticsReady || !analyticsEnabled || !analytics) return;
+  setUserProperties(analytics, properties);
 }
 
 export function setAnalyticsUser(uid) {
-  if (
-    !analyticsReady ||
-    !analyticsEnabled ||
-    !analytics ||
-    !uid
-  ) {
-    return;
-  }
-
+  if (!analyticsReady || !analyticsEnabled || !analytics || !uid) return;
   setUserId(analytics, uid);
 }
 
@@ -174,47 +128,23 @@ export function watchAuth(callback) {
     return () => {};
   }
 
-  return onAuthStateChanged(
-    auth,
-    callback
-  );
+  return onAuthStateChanged(auth, callback);
 }
 
 export async function signInGoogle() {
   if (!ensureFirebase()) {
-    throw new Error(
-      'Firebase is not configured.'
-    );
+    throw new Error('Firebase is not configured.');
   }
 
   const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
 
-  provider.setCustomParameters({
-    prompt: 'select_account'
-  });
-
-  const result = await signInWithPopup(
-    auth,
-    provider
-  );
-
+  const result = await signInWithPopup(auth, provider);
   return result.user;
 }
 
-/*
-  Phone authentication has been removed.
-
-  These three functions are intentionally
-  kept because another file in the game may
-  still import them.
-
-  Returning true from hasPhoneProvider()
-  tells the old login flow that verification
-  has already been completed.
-
-  This prevents the OTP screen from opening.
-*/
-
+// Phone authentication is disabled.
+// These functions stay exported so older UI imports do not break.
 export function hasPhoneProvider() {
   return true;
 }
@@ -224,16 +154,11 @@ export function createPhoneVerifier() {
 }
 
 export async function sendPhoneLinkCode() {
-  throw new Error(
-    'Phone verification is disabled. Please use Google sign-in.'
-  );
+  throw new Error('Phone verification is disabled. Please continue with Google sign-in.');
 }
 
 export async function logoutPlayer() {
-  if (!ensureFirebase()) {
-    return;
-  }
-
+  if (!ensureFirebase()) return;
   await signOut(auth);
 }
 
@@ -242,29 +167,16 @@ export function currentPlayer() {
 }
 
 export async function refreshPlayerToken() {
-  if (!auth?.currentUser) {
-    return false;
-  }
+  if (!auth?.currentUser) return false;
 
   await auth.currentUser.getIdToken(true);
-
   return true;
 }
 
-export async function registerPlayer(
-  user,
-  installed = false
-) {
-  if (!ensureFirebase() || !user) {
-    return;
-  }
+export async function registerPlayer(user, installed = false) {
+  if (!ensureFirebase() || !user) return;
 
-  const ref = doc(
-    db,
-    'users',
-    user.uid
-  );
-
+  const ref = doc(db, 'users', user.uid);
   const existing = await getDoc(ref);
 
   const data = {
@@ -272,12 +184,8 @@ export async function registerPlayer(
     displayName: user.displayName || '',
     photoURL: user.photoURL || '',
     provider: 'google',
-
     lastSeenAt: serverTimestamp(),
-
-    lastDevice:
-      navigator.userAgent.slice(0, 300),
-
+    lastDevice: navigator.userAgent.slice(0, 300),
     installed: Boolean(installed)
   };
 
@@ -285,95 +193,45 @@ export async function registerPlayer(
     data.createdAt = serverTimestamp();
   }
 
-  await setDoc(
-    ref,
-    data,
-    {
-      merge: true
-    }
-  );
+  await setDoc(ref, data, { merge: true });
 }
 
 export async function markInstalled(user) {
-  if (!ensureFirebase() || !user) {
-    return;
-  }
+  if (!ensureFirebase() || !user) return;
 
   await setDoc(
-    doc(
-      db,
-      'users',
-      user.uid
-    ),
+    doc(db, 'users', user.uid),
     {
       installed: true,
       lastSeenAt: serverTimestamp()
     },
-    {
-      merge: true
-    }
+    { merge: true }
   );
 }
 
-export function watchPlayerAdmin(
-  uid,
-  callback,
-  onError = () => {}
-) {
-  if (!ensureFirebase() || !uid) {
-    return () => {};
-  }
+export function watchPlayerAdmin(uid, callback, onError = () => {}) {
+  if (!ensureFirebase() || !uid) return () => {};
 
   return onSnapshot(
-    doc(
-      db,
-      'users',
-      uid
-    ),
-
+    doc(db, 'users', uid),
     (snap) => {
-      callback(
-        snap.exists()
-          ? snap.data()
-          : {}
-      );
+      callback(snap.exists() ? snap.data() : {});
     },
-
     onError
   );
 }
 
-export async function syncPlayerStats(
-  user,
-  stats = {}
-) {
-  if (!ensureFirebase() || !user) {
-    return;
-  }
+export async function syncPlayerStats(user, stats = {}) {
+  if (!ensureFirebase() || !user) return;
 
   await setDoc(
-    doc(
-      db,
-      'users',
-      user.uid
-    ),
-
+    doc(db, 'users', user.uid),
     {
-      lastKnownCredits:
-        Number(stats.credits || 0),
-
-      selectedCar:
-        String(stats.selectedCar || ''),
-
-      careerCompleted:
-        Number(stats.careerCompleted || 0),
-
-      lastSeenAt:
-        serverTimestamp()
+      lastKnownCredits: Number(stats.credits || 0),
+      selectedCar: String(stats.selectedCar || ''),
+      careerCompleted: Number(stats.careerCompleted || 0),
+      lastSeenAt: serverTimestamp()
     },
-
-    {
-      merge: true
-    }
+    { merge: true }
   );
 }

@@ -42,3 +42,9 @@ See `FIREBASE_SETUP.md` for the setup and the fields I use to block users or giv
 There is no Install button in the game menu. On the first browser launch, the game uses the browser's native PWA install prompt when it is available. The browser still controls the final install confirmation.
 
 After installation the app uses the icon files in `public/icons` and opens in fullscreen landscape mode.
+
+## Mobile controls update
+
+The mobile build supports the browser/Android back gesture, tilt steering and collision vibration. Tilt steering and vibration can be turned on or off from Settings. The first browser launch shows the install flow before account sign-in; once installed, the PWA opens in full-screen mode.
+
+Google sign-in is the only player authentication method in this build.

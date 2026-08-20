@@ -9,15 +9,12 @@ import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
 import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
 import {RaceVFX} from './vfx.js';
 import {
-  createPhoneVerifier,
   currentPlayer,
   firebaseConfigured,
-  hasPhoneProvider,
   logoutPlayer,
   markInstalled,
   refreshPlayerToken,
   registerPlayer,
-  sendPhoneLinkCode,
   setAnalyticsEnabled,
   setAnalyticsUser,
   setPlayerProperties,
@@ -32,7 +29,7 @@ import {
 
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)], clamp=THREE.MathUtils.clamp, lerp=THREE.MathUtils.lerp;
 const SAVE_KEY='velocityLegendsFinal:v1';
-const fresh={credits:3500,selectedCar:'vortex',unlocked:['vortex'],completed:{},best:{},upgrades:{},carColors:{},achievements:{},sound:true,music:true,quality:'high',camera:'dynamic',analytics:true,daily:0,lastDaily:'',lastCreditGrantId:''};
+const fresh={credits:3500,selectedCar:'vortex',unlocked:['vortex'],completed:{},best:{},upgrades:{},carColors:{},achievements:{},sound:true,music:true,quality:'high',camera:'dynamic',analytics:true,tiltSteering:true,vibration:true,daily:0,lastDaily:'',lastCreditGrantId:''};
 let profile={...fresh};try{profile={...fresh,...JSON.parse(localStorage.getItem(SAVE_KEY)||'{}')}}catch{}
 profile.unlocked=Array.isArray(profile.unlocked)?profile.unlocked:['vortex'];profile.upgrades=profile.upgrades||{};profile.carColors=profile.carColors||{};profile.achievements=profile.achievements||{};
 const save=()=>{localStorage.setItem(SAVE_KEY,JSON.stringify(profile));if(typeof firebaseUser!=='undefined'&&firebaseUser)syncPlayerStats(firebaseUser,{credits:profile.credits,selectedCar:profile.selectedCar,careerCompleted:Object.keys(profile.completed||{}).length}).catch(()=>{})};
@@ -41,17 +38,20 @@ startAnalytics(profile.analytics!==false).then(()=>{setPlayerProperties({selecte
 
 let deferredPrompt = null;
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-let firstLaunchResolved = isStandalone() || localStorage.getItem('vlFirstLaunchResolved') === '1';
+let firstLaunchResolved = isStandalone();
 
 async function requestInstallOnFirstLaunch() {
-  if (isStandalone() || !deferredPrompt) return;
+  if (isStandalone()) return 'installed';
+  if (!deferredPrompt) return 'unavailable';
   try {
-    trackEvent('install_prompt_opened', { source: 'first_launch' });
+    trackEvent('install_prompt_opened', { source: 'startup_gate' });
     deferredPrompt.prompt();
     const result = await deferredPrompt.userChoice;
-    trackEvent('install_prompt_result', { outcome: result.outcome, source: 'first_launch' });
+    trackEvent('install_prompt_result', { outcome: result.outcome, source: 'startup_gate' });
+    return result.outcome;
   } catch (error) {
     console.info('Install prompt was not available:', error);
+    return 'unavailable';
   } finally {
     deferredPrompt = null;
   }
@@ -69,11 +69,48 @@ const app=$('#app');app.innerHTML=`
 </div>
 <div id="countdown" class="countdown"></div><div id="toastZone"></div><div id="shell" class="menu"></div>`;
 const shell=$('#shell');
+let activeMenu='boot';
+let historyRender=false;
+let tiltRaw=0,tiltNeutral=0,tiltFiltered=0,tiltPermissionAsked=false;
+history.replaceState({vlScreen:'boot'},'',location.href);
+
+function pushGameHistory(screen){
+  activeMenu=screen;
+  if(historyRender){historyRender=false;return;}
+  if(history.state?.vlScreen===screen)return;
+  history.pushState({vlScreen:screen},'',location.href);
+}
+function vibrate(pattern){
+  if(profile.vibration!==false&&navigator.vibrate) navigator.vibrate(pattern);
+}
+function orientationSteer(event){
+  const angle=screen.orientation?.angle ?? window.orientation ?? 0;
+  let value=Number(event.gamma||0);
+  if(Math.abs(angle)===90) value=(angle===90?-1:1)*Number(event.beta||0);
+  tiltRaw=clamp(value/28,-1,1);
+}
+addEventListener('deviceorientation',orientationSteer,true);
+async function enableTiltControl(){
+  if(profile.tiltSteering===false)return false;
+  try{
+    if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'&&!tiltPermissionAsked){
+      tiltPermissionAsked=true;
+      const allowed=await DeviceOrientationEvent.requestPermission();
+      if(allowed!=='granted')return false;
+    }
+    tiltNeutral=tiltRaw;
+    return true;
+  }catch{return false}
+}
+function tiltInput(){
+  if(profile.tiltSteering===false)return 0;
+  const target=clamp((tiltRaw-tiltNeutral)*1.55,-1,1);
+  tiltFiltered=lerp(tiltFiltered,target,.16);
+  return Math.abs(tiltFiltered)<.06?0:tiltFiltered;
+}
 let firebaseUser = null;
 let stopAdminWatch = null;
 let gameBooted = false;
-let phoneConfirmation = null;
-let phoneVerifier = null;
 
 function removeAccountGate(){
   document.querySelector('#accountGate')?.remove();
@@ -90,15 +127,20 @@ function accountGate(content){
 }
 
 async function firstLaunchGate(next){
-  if(firstLaunchResolved || isStandalone()) return next();
-  const gate=accountGate(`<small>FIRST LAUNCH</small><h2>READY TO RACE?</h2><p>The game can be installed from your browser and then used like an app.</p><button class="button accountMain" id="continueFirstLaunch">CONTINUE</button>`);
+  if(isStandalone()) return next();
+  const gate=accountGate(`<small>INSTALL VELOCITY LEGENDS</small><h2>PLAY LIKE A REAL APP</h2><p>Install the game for full-screen play, the Velocity Legends icon, faster repeat loading and offline-ready game files.</p><button class="button accountMain" id="continueFirstLaunch">INSTALL & CONTINUE</button><button class="accountLink" id="continueWeb">CONTINUE IN BROWSER</button><div class="accountError" id="installHelp"></div>`);
+  const proceed=()=>{firstLaunchResolved=true;removeAccountGate();next();};
   gate.querySelector('#continueFirstLaunch').onclick=async()=>{
     audio.resume();
-    await requestInstallOnFirstLaunch();
-    firstLaunchResolved=true;
-    localStorage.setItem('vlFirstLaunchResolved','1');
-    next();
+    const outcome=await requestInstallOnFirstLaunch();
+    if(outcome==='accepted'||isStandalone()) return proceed();
+    if(outcome==='dismissed') return;
+    const help=gate.querySelector('#installHelp');
+    help.textContent=/iPhone|iPad|iPod/i.test(navigator.userAgent)
+      ? 'On iPhone/iPad: Share → Add to Home Screen.'
+      : 'Chrome has not offered installation yet. Use browser menu → Install app / Add to Home screen.';
   };
+  gate.querySelector('#continueWeb').onclick=proceed;
 }
 
 function showFirebaseMissing(){
@@ -115,59 +157,10 @@ function showLogin(){
       firebaseUser=user;
       setAnalyticsUser(user.uid);
       await registerPlayer(user,isStandalone());
-      if(hasPhoneProvider(user)) finishAccountLogin(user); else showPhoneSetup(user);
+      finishAccountLogin(user);
     }catch(error){
       console.warn(error);
       err.textContent=error?.code==='auth/popup-closed-by-user'?'Sign-in was cancelled.':'Google sign-in failed. Check Firebase Authentication setup.';
-      btn.disabled=false;
-    }
-  };
-}
-
-function normalizePhone(value){
-  const v=String(value||'').replace(/[\s()-]/g,'');
-  if(v.startsWith('+')) return v;
-  if(/^\d{10}$/.test(v)) return `+91${v}`;
-  return v;
-}
-
-function showPhoneSetup(user){
-  const gate=accountGate(`<small>ONE-TIME VERIFICATION</small><h2>VERIFY YOUR PHONE</h2><p>Signed in as <b>${user.email||'Google account'}</b>. Enter your mobile number and verify the OTP to finish your player account.</p><div class="phoneRow"><input id="phoneNumber" inputmode="tel" autocomplete="tel" placeholder="+91 98765 43210"><button class="button" id="sendOtp">SEND OTP</button></div><div id="recaptcha-container" class="recaptchaBox"></div><div class="otpRow" id="otpRow" hidden><input id="otpCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="6-digit OTP"><button class="button" id="verifyOtp">VERIFY</button></div><div class="accountError" id="accountError"></div><button class="accountLink" id="changeGoogle">Use a different Google account</button>`);
-  const errorBox=gate.querySelector('#accountError');
-  gate.querySelector('#changeGoogle').onclick=async()=>{await logoutPlayer();showLogin()};
-  gate.querySelector('#sendOtp').onclick=async()=>{
-    errorBox.textContent='';
-    const phone=normalizePhone(gate.querySelector('#phoneNumber').value);
-    if(!/^\+[1-9]\d{7,14}$/.test(phone)){errorBox.textContent='Enter a valid phone number with country code.';return}
-    const btn=gate.querySelector('#sendOtp');btn.disabled=true;
-    try{
-      if(phoneVerifier){try{phoneVerifier.clear()}catch{}}
-      phoneVerifier=createPhoneVerifier('recaptcha-container');
-      phoneConfirmation=await sendPhoneLinkCode(user,phone,phoneVerifier);
-      gate.querySelector('#otpRow').hidden=false;
-      gate.querySelector('#otpCode').focus();
-      btn.textContent='OTP SENT';
-    }catch(error){
-      console.warn(error);
-      errorBox.textContent=error?.code==='auth/credential-already-in-use'?'This phone number is already linked to another account.':'Could not send OTP. Check the number and Firebase Phone Authentication settings.';
-      btn.disabled=false;
-      btn.textContent='SEND OTP';
-      if(phoneVerifier){try{phoneVerifier.clear()}catch{}}
-      phoneVerifier=null;
-    }
-  };
-  gate.querySelector('#verifyOtp').onclick=async()=>{
-    const code=gate.querySelector('#otpCode').value.trim();
-    if(!/^\d{6}$/.test(code)){errorBox.textContent='Enter the 6-digit OTP.';return}
-    const btn=gate.querySelector('#verifyOtp');btn.disabled=true;errorBox.textContent='';
-    try{
-      const result=await phoneConfirmation.confirm(code);
-      firebaseUser=result.user;
-      await registerPlayer(firebaseUser,isStandalone());
-      finishAccountLogin(firebaseUser);
-    }catch(error){
-      console.warn(error);
-      errorBox.textContent='OTP verification failed. Try again.';
       btn.disabled=false;
     }
   };
@@ -220,8 +213,7 @@ async function finishAccountLogin(user){
 function accountScreen(){
   const user=firebaseUser||currentPlayer();
   const email=user?.email||'Not available';
-  const phone=user?.phoneNumber||'Not verified';
-  menuChrome('ACCOUNT',`<div class="accountPanel"><div class="accountAvatar">${user?.photoURL?`<img src="${user.photoURL}" alt="">`:'VL'}</div><div><small>PLAYER</small><h3>${user?.displayName||'Velocity Legends Player'}</h3><p>${email}</p><p>${phone}</p><p class="uidLine">UID ${user?.uid||'-'}</p></div></div><div class="resultBtns"><button class="button danger" id="logoutAccount">SIGN OUT</button><button class="button secondary" id="accountBack">← BACK</button></div>`);
+  menuChrome('ACCOUNT',`<div class="accountPanel"><div class="accountAvatar">${user?.photoURL?`<img src="${user.photoURL}" alt="">`:'VL'}</div><div><small>PLAYER</small><h3>${user?.displayName||'Velocity Legends Player'}</h3><p>${email}</p><p class="uidLine">UID ${user?.uid||'-'}</p></div></div><div class="resultBtns"><button class="button danger" id="logoutAccount">SIGN OUT</button><button class="button secondary" id="accountBack">← BACK</button></div>`);
   $('#logoutAccount').onclick=async()=>{stopAdminWatch?.();stopAdminWatch=null;firebaseUser=null;await logoutPlayer();showLogin()};
   $('#accountBack').onclick=settings;
 }
@@ -234,7 +226,6 @@ function startAccountBoot(){
       firebaseUser=user;
       setAnalyticsUser(user.uid);
       try{await registerPlayer(user,isStandalone())}catch{}
-      if(!hasPhoneProvider(user)){showPhoneSetup(user);return}
       finishAccountLogin(user);
     });
   });
@@ -249,7 +240,7 @@ const credits=()=>profile.credits.toLocaleString('en-IN');
 function ensureUpgrade(id){profile.upgrades[id]??={engine:0,handling:0,nitro:0};return profile.upgrades[id]}
 function carColor(id){const c=carById(id);return Number.isFinite(profile.carColors[id])?profile.carColors[id]:c.color}
 function tunedCar(id){const c={...carById(id)},u=ensureUpgrade(id);c.color=carColor(id);c.top+=u.engine*1.25;c.accel+=u.engine*1.05;c.handling+=u.handling*.035;c.nitro+=u.nitro*.035;return c}
-function menuChrome(title,body,sub=''){destroyGaragePreview();destroyHomePreview();shell.style.display='grid';shell.innerHTML=`<div class="gameTop"><div class="brandMini"><b>VL</b><span>VELOCITY LEGENDS</span></div><div class="topResource"><span>⚡ 12/12</span><span>◈ ${credits()}</span><span>⬡ ${Math.floor(profile.credits/12)}</span><button class="gearMini" id="topSettings">⚙</button></div></div><div class="panel wide"><div class="menuhead"><div><div class="eyebrow">VELOCITY LEGENDS • WORLD TOUR</div><h2>${title}</h2>${sub?`<p>${sub}</p>`:''}</div></div>${body}</div>`;setTimeout(()=>{const x=$('#topSettings');if(x)x.onclick=settings},0);}
+function menuChrome(title,body,sub=''){pushGameHistory(title.toLowerCase());destroyGaragePreview();destroyHomePreview();shell.style.display='grid';shell.innerHTML=`<div class="gameTop"><div class="brandMini"><b>VL</b><span>VELOCITY LEGENDS</span></div><div class="topResource"><span>⚡ 12/12</span><span>◈ ${credits()}</span><span>⬡ ${Math.floor(profile.credits/12)}</span><button class="gearMini" id="topSettings">⚙</button></div></div><div class="panel wide"><div class="menuhead"><div><div class="eyebrow">VELOCITY LEGENDS • WORLD TOUR</div><h2>${title}</h2>${sub?`<p>${sub}</p>`:''}</div></div>${body}</div>`;setTimeout(()=>{const x=$('#topSettings');if(x)x.onclick=settings},0);}
 function toast(t,kind='info'){const x=document.createElement('div');x.className=`toast ${kind}`;x.textContent=t;$('#toastZone').append(x);setTimeout(()=>x.remove(),2100)}
 function todayKey(){const d=new Date();return `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`}
 function claimDaily(){const key=todayKey();if(profile.lastDaily===key)return false;profile.daily=(profile.daily||0)+1;const reward=500+Math.min(6,profile.daily%7)*250;profile.credits+=reward;profile.lastDaily=key;save();setTimeout(()=>{audio.reward();toast(`DAILY REWARD +${reward} CR`,'good')},450);return true}
@@ -281,9 +272,9 @@ function upgrades(id){const c=carById(id),u=ensureUpgrade(id);menuChrome('TUNING
 $$('[data-up]').forEach(b=>b.onclick=()=>{const key=b.dataset.up,l=u[key],cost=upgradeCost(l);if(l>=5)return;if(profile.credits<cost)return toast('NOT ENOUGH CREDITS','bad');profile.credits-=cost;u[key]++;save();audio.reward();upgrades(id)});$('#back').onclick=garage;}
 
 function achievements(){trackScreen('achievements');menuChrome('ACHIEVEMENTS',`<div class="achievementList">${ACHIEVEMENTS.map(a=>`<div class="achievement ${profile.achievements[a.id]?'earned':''}"><div><small>${profile.achievements[a.id]?'✓ EARNED':'CHALLENGE'}</small><b>${a.name}</b><span>${a.desc}</span></div><em>◈ ${a.reward} CR</em></div>`).join('')}</div><button class="button secondary" id="back">← BACK</button>`);$('#back').onclick=home;}
-function settings(){trackScreen('settings');menuChrome('SETTINGS',`<div class="settingRows"><label>Sound Effects <button class="button secondary" id="sound">${profile.sound?'ON':'OFF'}</button></label><label>Music <button class="button secondary" id="music">${profile.music?'ON':'OFF'}</button></label><label>Graphics <select id="quality"><option value="high">HIGH</option><option value="medium">MEDIUM</option><option value="low">LOW</option></select></label><label>Camera <select id="cameraSet"><option value="dynamic">DYNAMIC</option><option value="close">CLOSE</option><option value="far">FAR</option></select></label><label>Usage Analytics <button class="button secondary" id="analyticsToggle">${profile.analytics!==false?'ON':'OFF'}</button></label><label>Account <button class="button secondary" id="accountBtn">ACCOUNT</button></label><label>Reset Progress <button class="button danger" id="reset">RESET SAVE</button></label></div><button class="button secondary" id="back">← BACK</button>`);$('#quality').value=profile.quality;$('#cameraSet').value=profile.camera;$('#sound').onclick=()=>{profile.sound=!profile.sound;save();audio.setEnabled(profile.sound);settings()};$('#music').onclick=()=>{profile.music=!profile.music;save();profile.music?audio.startMusic():audio.stopMusic();settings()};$('#quality').onchange=e=>{profile.quality=e.target.value;save();applyQuality()};$('#cameraSet').onchange=e=>{profile.camera=e.target.value;save()};$('#analyticsToggle').onclick=()=>{profile.analytics=profile.analytics===false;save();setAnalyticsEnabled(profile.analytics);settings()};$('#accountBtn').onclick=accountScreen;$('#reset').onclick=()=>{if(confirm('Reset all cars, upgrades, career progress and credits?')){profile=structuredClone(fresh);save();home()}};$('#back').onclick=home;}
-function help(){trackScreen('controls');menuChrome('CONTROLS',`<div class="helpGrid"><div class="helpCard"><b>KEYBOARD</b><span>W / ↑ — Accelerate</span><span>S / ↓ — Brake / Reverse</span><span>A D / ← → — Steer</span><span>SPACE — Drift</span><span>SHIFT — Nitro</span><span>ESC — Pause</span><span>R — Restart</span></div><div class="helpCard"><b>GAMEPAD</b><span>Left Stick — Steer</span><span>RT / A — Accelerate</span><span>LT / B — Brake</span><span>X — Drift</span><span>LB / RB — Nitro</span><span>Start — Pause</span></div><div class="helpCard"><b>MOBILE</b><span>On-screen steering</span><span>Throttle + brake</span><span>Dedicated DRIFT button</span><span>N₂O boost button</span><span>Landscape recommended</span></div></div><button class="button secondary" id="back">← BACK</button>`);$('#back').onclick=home;}
-function raceSetup(e){trackScreen('race_setup');const c=tunedCar(profile.selectedCar),tr=trackById(e.track);menuChrome('RACE READY',`<div class="setupGrid"><div class="setupTrack" style="--accent:#${tr.accent.toString(16).padStart(6,'0')}"><small>${e.mode.toUpperCase()}</small><b>${e.name}</b><span>${tr.name} • ${e.laps} LAPS • ${e.ai} RIVALS</span><em>${tr.weather.toUpperCase()}</em></div><div class="setupCar"><small>YOUR CAR • CLASS ${c.class}</small><b>${c.name}</b><span>TOP ${Math.round(c.top*6.2)} KM/H • TUNED</span><button class="button secondary" id="changeCar">CHANGE CAR</button></div></div><div class="raceBrief"><b>OBJECTIVE</b><span>${e.mode==='Time Attack'?`Beat ${formatTime(e.target)}`:e.mode==='Knockout'?'Stay out of last place at every elimination':'Finish in 1st place'}</span></div><button class="button huge" id="start">START RACE</button><button class="button secondary" id="back">← BACK</button>`);$('#start').onclick=()=>startRace(e);$('#changeCar').onclick=garage;$('#back').onclick=e.quick?quickRace:career;}
+function settings(){trackScreen('settings');menuChrome('SETTINGS',`<div class="settingRows"><label>Sound Effects <button class="button secondary" id="sound">${profile.sound?'ON':'OFF'}</button></label><label>Music <button class="button secondary" id="music">${profile.music?'ON':'OFF'}</button></label><label>Tilt Steering <button class="button secondary" id="tiltToggle">${profile.tiltSteering!==false?'ON':'OFF'}</button></label><label>Collision Vibration <button class="button secondary" id="vibrationToggle">${profile.vibration!==false?'ON':'OFF'}</button></label><label>Graphics <select id="quality"><option value="high">HIGH</option><option value="medium">MEDIUM</option><option value="low">LOW</option></select></label><label>Camera <select id="cameraSet"><option value="dynamic">DYNAMIC</option><option value="close">CLOSE</option><option value="far">FAR</option></select></label><label>Usage Analytics <button class="button secondary" id="analyticsToggle">${profile.analytics!==false?'ON':'OFF'}</button></label><label>Account <button class="button secondary" id="accountBtn">ACCOUNT</button></label><label>Reset Progress <button class="button danger" id="reset">RESET SAVE</button></label></div><button class="button secondary" id="back">← BACK</button>`);$('#quality').value=profile.quality;$('#cameraSet').value=profile.camera;$('#sound').onclick=()=>{profile.sound=!profile.sound;save();audio.setEnabled(profile.sound);settings()};$('#music').onclick=()=>{profile.music=!profile.music;save();profile.music?audio.startMusic():audio.stopMusic();settings()};$('#tiltToggle').onclick=async()=>{profile.tiltSteering=profile.tiltSteering===false;save();if(profile.tiltSteering)await enableTiltControl();settings()};$('#vibrationToggle').onclick=()=>{profile.vibration=profile.vibration===false;save();if(profile.vibration)vibrate(35);settings()};$('#quality').onchange=e=>{profile.quality=e.target.value;save();applyQuality()};$('#cameraSet').onchange=e=>{profile.camera=e.target.value;save()};$('#analyticsToggle').onclick=()=>{profile.analytics=profile.analytics===false;save();setAnalyticsEnabled(profile.analytics);settings()};$('#accountBtn').onclick=accountScreen;$('#reset').onclick=()=>{if(confirm('Reset all cars, upgrades, career progress and credits?')){profile=structuredClone(fresh);save();home()}};$('#back').onclick=home;}
+function help(){trackScreen('controls');menuChrome('CONTROLS',`<div class="helpGrid"><div class="helpCard"><b>KEYBOARD</b><span>W / ↑ — Accelerate</span><span>S / ↓ — Brake / Reverse</span><span>A D / ← → — Steer</span><span>SPACE — Drift</span><span>SHIFT — Nitro</span><span>ESC — Pause</span><span>R — Restart</span></div><div class="helpCard"><b>GAMEPAD</b><span>Left Stick — Steer</span><span>RT / A — Accelerate</span><span>LT / B — Brake</span><span>X — Drift</span><span>LB / RB — Nitro</span><span>Start — Pause</span></div><div class="helpCard"><b>MOBILE</b><span>Tilt phone left / right — Steer</span><span>On-screen steering also available</span><span>Throttle + brake</span><span>Dedicated DRIFT button</span><span>N₂O boost button</span><span>Landscape recommended</span></div></div><button class="button secondary" id="back">← BACK</button>`);$('#back').onclick=home;}
+function raceSetup(e){trackScreen('race_setup');const c=tunedCar(profile.selectedCar),tr=trackById(e.track);menuChrome('RACE READY',`<div class="setupGrid"><div class="setupTrack" style="--accent:#${tr.accent.toString(16).padStart(6,'0')}"><small>${e.mode.toUpperCase()}</small><b>${e.name}</b><span>${tr.name} • ${e.laps} LAPS • ${e.ai} RIVALS</span><em>${tr.weather.toUpperCase()}</em></div><div class="setupCar"><small>YOUR CAR • CLASS ${c.class}</small><b>${c.name}</b><span>TOP ${Math.round(c.top*6.2)} KM/H • TUNED</span><button class="button secondary" id="changeCar">CHANGE CAR</button></div></div><div class="raceBrief"><b>OBJECTIVE</b><span>${e.mode==='Time Attack'?`Beat ${formatTime(e.target)}`:e.mode==='Knockout'?'Stay out of last place at every elimination':'Finish in 1st place'}</span></div><button class="button huge" id="start">START RACE</button><button class="button secondary" id="back">← BACK</button>`);$('#start').onclick=async()=>{await enableTiltControl();startRace(e)};$('#changeCar').onclick=garage;$('#back').onclick=e.quick?quickRace:career;}
 
 // ----- HOME 3D HERO -----
 let homePreview=null;
@@ -396,7 +387,7 @@ $('#stuntBtn').addEventListener('pointerdown',e=>{e.preventDefault();audio.resum
 $('#pauseBtn').onclick=togglePause;
 function gamepad(){const g=navigator.getGamepads?.()[0];if(!g)return null;return{steer:Math.abs(g.axes[0])>.12?g.axes[0]:0,gas:g.buttons[7]?.value||g.buttons[0]?.value||0,brake:g.buttons[6]?.value||g.buttons[1]?.value||0,boost:g.buttons[4]?.pressed||g.buttons[5]?.pressed,drift:g.buttons[2]?.pressed,stunt:g.buttons[3]?.pressed,pause:g.buttons[9]?.pressed}}
 function nearestTrack(pos){let best=0,bd=Infinity;for(let i=0;i<trackSamples.length;i++){const d=trackSamples[i].distanceToSquared(pos);if(d<bd){bd=d;best=i}}return{t:best/(trackSamples.length-1),point:trackSamples[best],dist:Math.sqrt(bd)}}
-function startRace(e){trackEvent('race_started',{event_id:e.id,mode:e.mode,track:e.track,car_id:profile.selectedCar,rivals:e.ai,endless:Boolean(e.endless)});audio.resume();audio.stopMusic();currentEvent=e;buildWorld(e);spawnRace();shell.style.display='none';$('#hud').hidden=false;$('#minimap').style.display=e.endless?'none':'block';restartRace();}
+function startRace(e){pushGameHistory('race');trackEvent('race_started',{event_id:e.id,mode:e.mode,track:e.track,car_id:profile.selectedCar,rivals:e.ai,endless:Boolean(e.endless)});audio.resume();audio.stopMusic();currentEvent=e;buildWorld(e);spawnRace();shell.style.display='none';$('#hud').hidden=false;$('#minimap').style.display=e.endless?'none':'block';restartRace();}
 function restartRace(){spawnRace();raceStart=performance.now();countdownUntil=raceStart+COUNTDOWN_MS;knockoutClock=raceStart+20000;eliminated=[];state='countdown';cameraShake=0;boostPulse=0;$('#countdown').textContent='3';$('#stunt').textContent='';$('#knockdowns').textContent='';$('#objective').textContent=currentEvent.endless?'FREE DRIVE • NO FINISH':currentEvent.mode==='Time Attack'?`TARGET ${formatTime(currentEvent.target)}`:currentEvent.mode==='Knockout'?'LAST PLACE ELIMINATED EVERY 20s':'FINISH 1ST';audio.countdown(3)}
 function togglePause(){if(state==='paused'){state='race';shell.style.display='none';$('#hud').hidden=false;raceStart+=performance.now()-pauseStamp;knockoutClock+=performance.now()-pauseStamp;audio.resume();return}if(!['race','countdown'].includes(state))return;pauseStamp=performance.now();state='paused';$('#hud').hidden=true;menuChrome('PAUSED',`<div class="pauseMenu"><button class="button huge" id="resume">RESUME</button><button class="button secondary" id="restart">RESTART RACE</button><button class="button secondary" id="quit">QUIT TO HOME</button></div>`);$('#resume').onclick=togglePause;$('#restart').onclick=()=>{shell.style.display='none';$('#hud').hidden=false;restartRace()};$('#quit').onclick=()=>{state='menu';$('#hud').hidden=true;$('#minimap').style.display='none';home()}}
 let pauseStamp=0,lastPadStunt=false;
@@ -406,18 +397,18 @@ function trigger360(){if(!player||state!=='race'||player.stunt)return;if(Math.ab
 function triggerBarrel(){if(!player||player.stunt)return;player.stunt={type:'barrel',time:0,duration:.88};player.stuntRot=0;player.stunts++;announceStunt('BARREL ROLL');}
 function endStunt(){if(!player?.stunt)return;const name=player.stunt.type==='barrel'?'BARREL ROLL':'360°';player.nitro=Math.min(100,player.nitro+(player.stunt.type==='barrel'?28:20));toast(`${name} • NITRO BONUS`,'good');player.stunt=null;player.stuntRot=0;player.mesh.rotation.x=0;player.mesh.rotation.z=0;}
 function updateStunt(dt){if(!player?.stunt)return;player.stunt.time+=dt;const u=clamp(player.stunt.time/player.stunt.duration,0,1),ease=1-Math.pow(1-u,2);player.stuntRot=ease*Math.PI*2;if(player.stunt.type==='360')player.mesh.rotation.y=player.angle+player.stuntRot;else player.mesh.rotation.z=player.stuntRot;if(u>=1&&player.stunt.type==='360')endStunt();}
-function knockdown(a){if(eliminated.includes(a)||a.knocked)return;a.knocked=true;a.crashTime=1.25;player.knockdowns++;player.nitro=Math.min(100,player.nitro+22);cameraShake=Math.max(cameraShake,.7);vfx.burst(a.mesh.position.clone().add(new THREE.Vector3(0,.6,0)),'spark',24);vfx.burst(a.mesh.position.clone().add(new THREE.Vector3(0,.4,0)),'smoke',7);audio.knockdown?.();announceStunt('KNOCKDOWN');flashFx('crash');}
-function collideCars(){for(const a of ai){if(eliminated.includes(a)||a.crashTime>0)continue;const d=player.mesh.position.distanceTo(a.mesh.position);if(d<4.15){if((player.shock||player.stunt)&&Math.abs(player.speed)>28){knockdown(a);player.speed*=.96}else{const push=player.mesh.position.clone().sub(a.mesh.position).setY(0).normalize();player.mesh.position.addScaledVector(push,.32);player.speed*=.79;player.combo=0;cameraShake=Math.max(cameraShake,.42);vfx.burst(player.mesh.position.clone().add(new THREE.Vector3(0,.35,0)),'spark',12,push);audio.crash();flashFx('crash')}}}}
+function knockdown(a){if(eliminated.includes(a)||a.knocked)return;a.knocked=true;a.crashTime=1.25;player.knockdowns++;player.nitro=Math.min(100,player.nitro+22);cameraShake=Math.max(cameraShake,.7);vfx.burst(a.mesh.position.clone().add(new THREE.Vector3(0,.6,0)),'spark',24);vfx.burst(a.mesh.position.clone().add(new THREE.Vector3(0,.4,0)),'smoke',7);audio.knockdown?.();vibrate([65,35,110]);announceStunt('KNOCKDOWN');flashFx('crash');}
+function collideCars(){for(const a of ai){if(eliminated.includes(a)||a.crashTime>0)continue;const d=player.mesh.position.distanceTo(a.mesh.position);if(d<4.15){if((player.shock||player.stunt)&&Math.abs(player.speed)>28){knockdown(a);player.speed*=.96}else{const push=player.mesh.position.clone().sub(a.mesh.position).setY(0).normalize();player.mesh.position.addScaledVector(push,.32);player.speed*=.79;player.combo=0;cameraShake=Math.max(cameraShake,.42);vfx.burst(player.mesh.position.clone().add(new THREE.Vector3(0,.35,0)),'spark',12,push);audio.impact?.(Math.min(1,d/4.15+.35));vibrate([45,25,70]);flashFx('crash')}}}}
 function updatePlayer(dt,now){
  const gp=gamepad();if(gp?.pause&&!lastPause){togglePause();lastPause=true}if(!gp?.pause)lastPause=false;if(gp?.stunt&&!lastPadStunt)trigger360();lastPadStunt=!!gp?.stunt;
- const acc=keys.KeyW||keys.ArrowUp||touchState.gas||gp?.gas>.1,br=keys.KeyS||keys.ArrowDown||touchState.brake||gp?.brake>.1;let steer=(keys.KeyA||keys.ArrowLeft||touchState.left?1:0)-(keys.KeyD||keys.ArrowRight||touchState.right?1:0);if(gp?.steer)steer=-gp.steer;
- const drifting=(keys.Space||touchState.drift||gp?.drift)&&Math.abs(player.speed)>14&&Math.abs(steer)>.08&&!player.stunt;const boost=(keys.ShiftLeft||keys.ShiftRight||touchState.boost||gp?.boost)&&player.nitro>0&&player.speed>8,perfect=boost&&player.nitro>32&&player.nitro<62;player.shock=boost&&player.nitro>82;
+ const acc=keys.KeyW||keys.ArrowUp||touchState.gas||gp?.gas>.1,br=keys.KeyS||keys.ArrowDown||touchState.brake||gp?.brake>.1;let steer=(keys.KeyA||keys.ArrowLeft||touchState.left?1:0)-(keys.KeyD||keys.ArrowRight||touchState.right?1:0);if(gp?.steer)steer=-gp.steer;else if(Math.abs(steer)<.01)steer=-tiltInput();
+ const drifting=(keys.Space||touchState.drift||gp?.drift)&&Math.abs(player.speed)>14&&Math.abs(steer)>.08&&!player.stunt;audio.skid?.(drifting?Math.min(1,Math.abs(player.speed)/45):0);const boost=(keys.ShiftLeft||keys.ShiftRight||touchState.boost||gp?.boost)&&player.nitro>0&&player.speed>8,perfect=boost&&player.nitro>32&&player.nitro<62;player.shock=boost&&player.nitro>82;
  const max=player.def.top*(player.shock?1.22:perfect?1.11:boost?1.065:1);if(acc)player.speed+=player.def.accel*dt;else player.speed-=8.5*dt;if(br)player.speed-=34*dt;player.speed=clamp(player.speed,-10,max);if(boost){player.speed+=21*player.def.nitro*dt;player.nitro=Math.max(0,player.nitro-(player.shock?38:perfect?24:29)*dt)}else player.nitro=Math.min(100,player.nitro+(drifting?14.5:5.2)*dt);
  if(player.shock){boostPulse+=dt;cameraShake=Math.max(cameraShake,.10);if(boostPulse>.045){boostPulse=0;const back=new THREE.Vector3(-Math.sin(player.angle),.3,-Math.cos(player.angle));vfx.trail(player.mesh.position.clone().addScaledVector(back,3.3),0xaeefff,1.8)}}else boostPulse=0;audio.engineSpeed(player.speed,boost);
  let handling=player.def.handling;if(drifting){handling*=1.47;player.drift+=Math.abs(player.speed)*dt;player.comboTime=now+1450;player.combo=Math.max(player.combo,1+Math.floor(player.drift/28));player.maxCombo=Math.max(player.maxCombo,player.combo);player.speed*=Math.pow(.987,dt*60);if(Math.random()<dt*22){const s=new THREE.Vector3(Math.cos(player.angle),0,-Math.sin(player.angle));vfx.burst(player.mesh.position.clone().addScaledVector(s,(Math.random()>.5?1.4:-1.4)),'smoke',1)}}else player.drift=Math.max(0,player.drift-16*dt);
  const steerPower=(.45+Math.min(Math.abs(player.speed)/24,1))*handling;player.angle+=steer*steerPower*dt*Math.sign(player.speed||1);const f=new THREE.Vector3(Math.sin(player.angle),0,Math.cos(player.angle));player.mesh.position.addScaledVector(f,player.speed*dt);if(!player.stunt||player.stunt.type!=='360')player.mesh.rotation.y=player.angle;
  if(player.air<=0&&Math.abs(player.mesh.position.y-carGroundY(player.mesh))<.18){for(const r of ramps){if(player.mesh.position.distanceTo(r.p)<5.8&&Math.abs(player.speed)>20){player.air=r.barrel?1.05:.88;player.airStart=now;player.vy=r.barrel?10.2:8.8;if(r.barrel)triggerBarrel();audio.tone(260,.18,'sine',.08,260);break}}}
- {const groundY=carGroundY(player.mesh),airborneNow=player.air>0||player.mesh.position.y>groundY+.012||Math.abs(player.vy)>.02;if(airborneNow){player.air=Math.max(0,player.air-dt);player.vy-=18*dt;player.mesh.position.y+=player.vy*dt;if(!player.stunt){player.mesh.rotation.z=lerp(player.mesh.rotation.z,-steer*.16,.12);player.mesh.rotation.x=lerp(player.mesh.rotation.x,-.04,.1)}if(player.mesh.position.y<=groundY&&player.vy<=0){const airborne=now-player.airStart;player.mesh.position.y=groundY;player.air=0;player.vy=0;if(player.stunt?.type==='barrel')endStunt();player.mesh.rotation.z=0;player.mesh.rotation.x=0;player.nitro=Math.min(100,player.nitro+18+Math.min(12,airborne/80));cameraShake=Math.max(cameraShake,.24);vfx.burst(player.mesh.position.clone(),'smoke',3);audio.tone(110,.12,'square',.05,60)}}else{player.air=0;player.vy=0;settleCarOnRoad(player.mesh,dt,false)}}
+ {const groundY=carGroundY(player.mesh),airborneNow=player.air>0||player.mesh.position.y>groundY+.012||Math.abs(player.vy)>.02;if(airborneNow){player.air=Math.max(0,player.air-dt);player.vy-=18*dt;player.mesh.position.y+=player.vy*dt;if(!player.stunt){player.mesh.rotation.z=lerp(player.mesh.rotation.z,-steer*.16,.12);player.mesh.rotation.x=lerp(player.mesh.rotation.x,-.04,.1)}if(player.mesh.position.y<=groundY&&player.vy<=0){const airborne=now-player.airStart;player.mesh.position.y=groundY;player.air=0;player.vy=0;if(player.stunt?.type==='barrel')endStunt();player.mesh.rotation.z=0;player.mesh.rotation.x=0;player.nitro=Math.min(100,player.nitro+18+Math.min(12,airborne/80));cameraShake=Math.max(cameraShake,.24);vfx.burst(player.mesh.position.clone(),'smoke',3);audio.landing?.();vibrate(22)}}else{player.air=0;player.vy=0;settleCarOnRoad(player.mesh,dt,false)}}
  updateStunt(dt);
  for(const p of pickups){if(!p.taken&&player.mesh.position.distanceTo(p.mesh.position)<3){p.taken=true;p.mesh.visible=false;player.nitro=Math.min(100,player.nitro+35);vfx.burst(p.mesh.position,'nitro',10);audio.pickup();toast('NITRO +35','good')}}updateDetailedCarVisual(player.mesh,player.speed,boost,drifting,dt,steer);if(player.air<=0&&!player.stunt){player.mesh.rotation.x=lerp(player.mesh.rotation.x,0,1-Math.pow(.00001,dt));const targetRoll=drifting?clamp(-steer*.055,-.065,.065):0;player.mesh.rotation.z=lerp(player.mesh.rotation.z,targetRoll,1-Math.pow(.00001,dt));if(Math.abs(player.mesh.rotation.x)<.002)player.mesh.rotation.x=0;if(Math.abs(player.mesh.rotation.z)<.002&&!drifting)player.mesh.rotation.z=0;}
  const n=nearestTrack(player.mesh.position);if(n.dist>roadHalf-1&&player.air<=0){player.speed*=Math.pow(.22,dt);player.mesh.position.lerp(n.point,Math.min(1,dt*.32))}if(n.dist>roadHalf+8){player.mesh.position.lerp(n.point,Math.min(1,dt*1.35));player.speed*=.78}let tn=n.t;if(player.lastT>.82&&tn<.18&&player.speed>4){player.lap++;if(!currentEvent.endless&&player.lap>currentEvent.laps)finishRace()}player.lastT=tn;player.progress=(player.lap-1)+tn;player.topSpeed=Math.max(player.topSpeed,Math.abs(player.speed)*6.2);if(player.combo&&now>player.comboTime){player.nitro=Math.min(100,player.nitro+player.combo*5.5);player.combo=0;player.drift=0}collideCars();
@@ -454,5 +445,24 @@ function drawMinimap(){const c=$('#minimap'),ctx=c.getContext('2d'),w=c.width,h=
 function weatherTick(dt){if(!weatherParticles)return;const arr=weatherParticles.geometry.attributes.position.array,weather=trackById(currentEvent.track).weather;for(let i=0;i<arr.length;i+=3){arr[i+1]-=dt*(weather==='snow'?7:weather==='dust'?2:45);if(arr[i+1]<0)arr[i+1]=90;if(weather==='dust')arr[i]+=dt*7}weatherParticles.geometry.attributes.position.needsUpdate=true;if(player)weatherParticles.position.x=player.mesh.position.x*.15,weatherParticles.position.z=player.mesh.position.z*.15}
 function animate(now){requestAnimationFrame(animate);if(state==='garage')renderGaragePreview(now);if(state==='menu'&&homePreview)renderHomePreview(now);const dt=Math.min(.035,(now-prev)/1000);prev=now;if(state==='countdown'){const rem=countdownUntil-now;$('.cinematicBars').classList.add('on');if(rem<=0){state='race';$('.cinematicBars').classList.remove('on');settleCarOnRoad(player.mesh,0,true);ai.forEach(a=>settleCarOnRoad(a.mesh,0,true));updateStartLights(0);$('#countdown').textContent='GO!';audio.countdown(0);audio.engineSpeed(0);cameraShake=.38;setTimeout(()=>$('#countdown').textContent='',560)}else{const n=Math.min(3,Math.ceil(rem/1000));if($('#countdown').textContent!==String(n)){audio.countdown(n);$('#countdown').textContent=n}updateGridAnimation(dt,now,rem)}}else if(state==='race'){updatePlayer(dt,now);updateAI(dt,now);knockout(now);hud(now)}if(state==='countdown')updateStartCamera(dt,now,countdownUntil-now);else if(state!=='paused')updateCamera(dt);weatherTick(dt);updateEnvironmentVisuals(world,dt,now);vfx.update(dt);pickups.forEach((p,i)=>{if(!p.taken){p.mesh.rotation.y+=dt*2.2;p.mesh.rotation.x+=dt*.8;p.mesh.position.y=1.35+Math.sin(now*.004+i)*.28}});if(profile.quality==='low')renderer.render(scene,camera);else composer.render()}
 function applyQuality(){const q=profile.quality;renderer.setPixelRatio(Math.min(devicePixelRatio,q==='high'?1.65:q==='medium'?1.2:1));renderer.shadowMap.enabled=q!=='low';sun.shadow.mapSize.set(q==='high'?2048:1024,q==='high'?2048:1024)}applyQuality();audio.setEnabled(profile.sound);
-addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);bloom.resolution.set(innerWidth,innerHeight)});addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;trackEvent('install_available')});addEventListener('appinstalled',()=>{deferredPrompt=null;firstLaunchResolved=true;localStorage.setItem('vlFirstLaunchResolved','1');trackEvent('pwa_installed');const u=currentPlayer();if(u)markInstalled(u).catch(()=>{});if($('#toastZone'))toast('VELOCITY LEGENDS INSTALLED','good')});if('serviceWorker'in navigator)navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(()=>{});window.addEventListener('contextmenu',e=>e.preventDefault());addEventListener('pointerdown',()=>audio.resume(),{once:true});
+addEventListener('popstate',e=>{
+  if(state==='race'||state==='countdown'){
+    history.pushState({vlScreen:'race'},'',location.href);
+    togglePause();
+    return;
+  }
+  const target=e.state?.vlScreen||'velocity legends';
+  historyRender=true;
+  if(target==='career')career();
+  else if(target==='quick race')quickRace();
+  else if(target==='garage')garage();
+  else if(target==='settings')settings();
+  else if(target==='achievements')achievements();
+  else if(target==='controls')help();
+  else if(target==='tuning')garage();
+  else if(target==='account')settings();
+  else if(target==='race ready')career();
+  else home();
+});
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);bloom.resolution.set(innerWidth,innerHeight)});addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;trackEvent('install_available')});addEventListener('appinstalled',()=>{deferredPrompt=null;firstLaunchResolved=true;trackEvent('pwa_installed');const u=currentPlayer();if(u)markInstalled(u).catch(()=>{});if($('#toastZone'))toast('VELOCITY LEGENDS INSTALLED','good')});if('serviceWorker'in navigator)navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch(()=>{});window.addEventListener('contextmenu',e=>e.preventDefault());addEventListener('pointerdown',()=>audio.resume(),{once:true});
 startAccountBoot();
