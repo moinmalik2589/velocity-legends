@@ -17,9 +17,9 @@ function windowTexture(night=true){const c=document.createElement('canvas');c.wi
 export function createVisualMaterials(track){
   const wet=['rain','night'].includes(track.weather),snow=track.weather==='snow';
   const asphalt=makeNoiseTexture({base:wet?'#171c21':'#262a2d',speck:'#656a6e',lines:true,seed:9});
-  const ground=makeNoiseTexture({base:snow?'#9eacb2':track.weather==='dust'?'#9b6038':'#45683d',speck:snow?'#cad4d8':'#66706a',seed:23});ground.repeat.set(22,22);
+  const ground=makeNoiseTexture({base:snow?'#9eacb2':track.weather==='rain'?'#24372f':track.weather==='dust'?'#9b6038':'#45683d',speck:snow?'#cad4d8':track.weather==='rain'?'#3f554b':'#66706a',seed:23});ground.repeat.set(22,22);
   return {
-    road:new THREE.MeshPhysicalMaterial({map:asphalt,color:snow?0xb7c3c8:0xffffff,roughness:wet?.24:snow?.68:.8,metalness:wet?.08:0,clearcoat:wet?.8:snow?.16:.08,clearcoatRoughness:wet?.18:.7}),
+    road:new THREE.MeshPhysicalMaterial({map:asphalt,color:snow?0xb7c3c8:track.weather==='rain'?0x7b8792:0xffffff,roughness:wet?.24:snow?.68:.8,metalness:wet?.08:0,clearcoat:wet?.8:snow?.16:.08,clearcoatRoughness:wet?.18:.7}),
     shoulder:new THREE.MeshStandardMaterial({color:snow?0x697a82:track.weather==='dust'?0x7e5235:0x55595b,roughness:.95}),
     ground:new THREE.MeshStandardMaterial({map:ground,color:0xffffff,roughness:1}),
     glass:new THREE.MeshPhysicalMaterial({color:0x18364b,metalness:.05,roughness:.06,transmission:.22,transparent:true,opacity:.82,clearcoat:1}),

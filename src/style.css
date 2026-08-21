@@ -108,3 +108,288 @@ body{overflow:hidden;overscroll-behavior:none}
   .mobile #brake{left:max(18px,env(safe-area-inset-left))!important;right:auto!important}
   .mobile #boost{right:max(18px,env(safe-area-inset-right))!important;left:auto!important}
 }
+
+
+/* Mobile interaction polish */
+button,.touch,.steeringWheel,#game,#hud,#minimap{
+  -webkit-user-select:none!important;
+  user-select:none!important;
+  -webkit-touch-callout:none!important;
+}
+.touch,.steeringWheel,#game,#hud{
+  touch-action:none;
+}
+input,select,textarea{
+  -webkit-user-select:auto!important;
+  user-select:auto!important;
+}
+
+/* Home and race-ready are designed to fit a single viewport.
+   Content-heavy pages keep internal scrolling. */
+.menu[data-view="velocity-legends"] .panel.wide,
+.menu[data-view="paused"] .panel.wide{
+  overflow-y:hidden!important;
+  padding-bottom:0!important;
+}
+.menu[data-view="settings"] .panel.wide,
+.menu[data-view="career"] .panel.wide,
+.menu[data-view="garage"] .panel.wide,
+.menu[data-view="achievements"] .panel.wide,
+.menu[data-view="quick-race"] .panel.wide,
+.menu[data-view="controls"] .panel.wide,
+.menu[data-view="tuning"] .panel.wide{
+  overflow-y:auto!important;
+  overscroll-behavior:contain;
+}
+
+/* Optional steering wheel mode */
+.steeringWheelWrap{
+  display:none;
+  position:absolute;
+  left:max(20px,env(safe-area-inset-left));
+  bottom:max(18px,env(safe-area-inset-bottom));
+  width:126px;
+  height:126px;
+  z-index:30;
+}
+.steeringWheel{
+  width:100%;
+  height:100%;
+  box-sizing:border-box;
+  border:12px solid #101820dd;
+  border-radius:50%;
+  background:radial-gradient(circle,#25384a 0 19%,#0d141d 20% 29%,transparent 30%);
+  box-shadow:0 10px 28px #000b,inset 0 0 0 2px #8bdfff44,0 0 22px #20cfff22;
+  position:relative;
+  transition:transform .05s linear;
+}
+.steeringWheel:before,
+.steeringWheel:after,
+.steeringWheel i{
+  content:"";
+  position:absolute;
+  left:50%;
+  top:50%;
+  width:10px;
+  height:45%;
+  background:linear-gradient(#546b7d,#111a23);
+  border-radius:8px;
+  transform-origin:50% 0;
+}
+.steeringWheel:before{transform:translate(-50%,0) rotate(0deg)}
+.steeringWheel:after{transform:translate(-50%,0) rotate(120deg)}
+.steeringWheel i:nth-child(1){transform:translate(-50%,0) rotate(240deg)}
+.steeringWheel i:nth-child(2),
+.steeringWheel i:nth-child(3){display:none}
+
+@media(max-width:900px),(pointer:coarse){
+  .menu[data-view="velocity-legends"] .homeShowcase{
+    height:calc(100dvh - 110px)!important;
+    min-height:0!important;
+  }
+  .menu[data-view="race-ready"] .setupGrid{
+    margin-top:76px;
+  }
+  .menu[data-view="race-ready"] .button.huge#start{
+    margin-bottom:8px;
+  }
+  .mobile #brake{
+    left:auto!important;
+    right:calc(max(18px,env(safe-area-inset-right)) + 92px)!important;
+  }
+}
+
+
+/* Race setup must never hide the START button on short mobile screens. */
+.menu[data-view="race-ready"] .panel.wide{
+  overflow-y:auto!important;
+  overscroll-behavior:contain!important;
+  padding-bottom:calc(88px + env(safe-area-inset-bottom))!important;
+}
+@media(max-width:900px),(pointer:coarse){
+  .menu[data-view="race-ready"] .setupGrid{
+    margin-top:64px!important;
+    gap:8px!important;
+  }
+  .menu[data-view="race-ready"] .setupTrack,
+  .menu[data-view="race-ready"] .setupCar{
+    padding:9px 12px!important;
+    min-height:0!important;
+  }
+  .menu[data-view="race-ready"] .raceBrief{
+    margin-top:8px!important;
+    margin-bottom:8px!important;
+    padding:8px 12px!important;
+  }
+  .menu[data-view="race-ready"] #start{
+    display:block!important;
+    margin:8px 24px 18px!important;
+    min-height:52px!important;
+    position:relative!important;
+    z-index:20!important;
+  }
+}
+
+
+/* Dedicated phone home CTA. The desktop PLAY button sits in .homeEvents,
+   which is intentionally hidden on narrow screens, so phones need their own. */
+.mobilePlayCareer{
+  display:none;
+  position:absolute;
+  z-index:12;
+  border:0;
+  background:linear-gradient(110deg,#ffb51d,#ffe03d);
+  color:#111;
+  font-weight:1000;
+  font-style:italic;
+  letter-spacing:.05em;
+  box-shadow:0 10px 28px #0008,0 0 18px #ffb51d44;
+  clip-path:polygon(7% 0,100% 0,93% 100%,0 100%);
+}
+
+@media(max-width:900px),(pointer:coarse){
+  .menu[data-view="velocity-legends"] .panel.wide{
+    overflow:hidden!important;
+    padding-bottom:0!important;
+  }
+  .menu[data-view="velocity-legends"] .homeShowcase{
+    height:calc(100dvh - 110px)!important;
+    min-height:0!important;
+    grid-template-columns:118px minmax(0,1fr)!important;
+  }
+  .menu[data-view="velocity-legends"] .homeNav{
+    padding-top:70px!important;
+    padding-bottom:70px!important;
+  }
+  .menu[data-view="velocity-legends"] .homeNav button{
+    padding:9px 6px!important;
+  }
+  .menu[data-view="velocity-legends"] .homeNav button span{
+    font-size:10px!important;
+    margin-left:6px!important;
+  }
+  .menu[data-view="velocity-legends"] .mobilePlayCareer{
+    display:block!important;
+    right:max(14px,env(safe-area-inset-right));
+    bottom:16px;
+    padding:14px 24px;
+    min-width:155px;
+    font-size:16px;
+  }
+  .menu[data-view="velocity-legends"] .homeCarName{
+    left:14px!important;
+    bottom:68px!important;
+  }
+  .menu[data-view="velocity-legends"] .homeCarName b{
+    font-size:clamp(25px,8vw,42px)!important;
+  }
+  .menu[data-view="velocity-legends"] .homeFooter{
+    height:52px!important;
+    padding:0 10px!important;
+  }
+}
+
+/* Extra protection for short landscape phones. */
+@media(max-height:500px) and (pointer:coarse){
+  .menu[data-view="velocity-legends"] .homeShowcase{
+    height:calc(100dvh - 104px)!important;
+  }
+  .menu[data-view="velocity-legends"] .homeNav{
+    padding-top:48px!important;
+    padding-bottom:52px!important;
+  }
+  .menu[data-view="velocity-legends"] .homeNav button{
+    padding:6px 5px!important;
+  }
+  .menu[data-view="velocity-legends"] .mobilePlayCareer{
+    bottom:8px!important;
+    padding:11px 20px!important;
+  }
+  .menu[data-view="velocity-legends"] .homeCarName{
+    bottom:55px!important;
+  }
+}
+
+
+/* Three mobile steering layouts */
+@media(max-width:900px),(pointer:coarse){
+  #mobileControls .leftControls,
+  #mobileControls .rightControls{
+    position:absolute;
+    bottom:max(18px,env(safe-area-inset-bottom));
+    z-index:32;
+    display:flex;
+    align-items:flex-end;
+    gap:12px;
+    pointer-events:none;
+  }
+  #mobileControls .leftControls{
+    left:max(18px,env(safe-area-inset-left));
+  }
+  #mobileControls .rightControls{
+    right:max(18px,env(safe-area-inset-right));
+  }
+  #mobileControls .leftControls > *,
+  #mobileControls .rightControls > *{
+    pointer-events:auto;
+  }
+
+  /* Override older absolute button positioning. */
+  #mobileControls #brake,
+  #mobileControls #boost,
+  #mobileControls #leftArrow,
+  #mobileControls #rightArrow{
+    position:relative!important;
+    left:auto!important;
+    right:auto!important;
+    bottom:auto!important;
+    margin:0!important;
+    width:76px!important;
+    height:76px!important;
+    flex:0 0 76px;
+  }
+
+  #mobileControls .arrowControl{
+    display:none;
+    border-radius:22px;
+    font-size:29px!important;
+    font-weight:1000;
+    background:#101722e8;
+    border:1px solid #9cdcff55;
+  }
+
+  /* Wheel mode: BRAKE + N2O stay together on left; wheel is on right. */
+  body:has(#mobileSteering option[value="wheel"]:checked) #mobileControls .leftControls{
+    left:max(18px,env(safe-area-inset-left));
+  }
+
+  #mobileControls .steeringWheelWrap{
+    position:relative!important;
+    left:auto!important;
+    right:auto!important;
+    bottom:auto!important;
+    width:132px!important;
+    height:132px!important;
+    flex:0 0 132px;
+  }
+}
+
+@media(max-width:900px),(pointer:coarse){
+  #mobileControls[data-steering="arrows"] #leftArrow,
+  #mobileControls[data-steering="arrows"] #rightArrow{
+    display:flex!important;
+    visibility:visible!important;
+    opacity:1!important;
+    align-items:center!important;
+    justify-content:center!important;
+  }
+  #mobileControls:not([data-steering="arrows"]) #leftArrow,
+  #mobileControls:not([data-steering="arrows"]) #rightArrow{
+    display:none!important;
+  }
+  #mobileControls[data-steering="wheel"] #steeringWheel{
+    touch-action:none!important;
+    -webkit-user-select:none!important;
+    user-select:none!important;
+  }
+}

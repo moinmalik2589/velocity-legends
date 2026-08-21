@@ -19,7 +19,7 @@ harbor:{name:'Steel Harbor',sky:0x9ec4d5,fog:0xb9d0da,ground:0x536067,accent:0xf
 desert:{name:'Red Canyon',sky:0xffb36a,fog:0xeab77d,ground:0xa96836,accent:0xff5e2c,shape:'wide',weather:'dust'},
 night:{name:'Neon City',sky:0x050916,fog:0x091228,ground:0x151b22,accent:0xb74dff,shape:'city',weather:'night'},
 alpine:{name:'Alpine Rush',sky:0x789bb4,fog:0xa6bcc8,ground:0x60746a,accent:0x39d9ff,shape:'figure8',weather:'snow'},
-storm:{name:'Thunder Run',sky:0x30384b,fog:0x566276,ground:0x33433b,accent:0x48d4ff,shape:'kidney',weather:'rain'},
+storm:{name:'Thunder Run',sky:0x121924,fog:0x263140,ground:0x26352d,accent:0x48d4ff,shape:'kidney',weather:'rain'},
 practice:{name:'Endless Practice',sky:0x8fd2ff,fog:0xb8def0,ground:0x47733f,accent:0x54f6c7,shape:'practice',weather:'clear',practice:true}
 };
 

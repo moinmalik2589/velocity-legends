@@ -20,8 +20,8 @@ import {
 import {
   doc,
   getDoc,
+  getDocFromServer,
   getFirestore,
-  onSnapshot,
   serverTimestamp,
   setDoc
 } from 'firebase/firestore';
@@ -209,27 +209,28 @@ export async function markInstalled(user) {
   );
 }
 
-export function watchPlayerAdmin(uid, callback, onError = () => {}) {
-  if (!ensureFirebase() || !uid) return () => {};
+export async function fetchPlayerAdmin(uid) {
+  if (!ensureFirebase() || !uid) return null;
 
-  return onSnapshot(
-    doc(db, 'users', uid),
-    (snap) => {
-      callback(snap.exists() ? snap.data() : {});
-    },
-    onError
-  );
+  try {
+    const snap = await getDocFromServer(doc(db, 'users', uid));
+    return snap.exists() ? snap.data() : {};
+  } catch (error) {
+    // Offline: localStorage remains the source of truth until the next online refresh.
+    return null;
+  }
 }
 
 export async function syncPlayerStats(user, stats = {}) {
   if (!ensureFirebase() || !user) return;
 
+  // Report device state without overwriting fields the admin edits.
   await setDoc(
     doc(db, 'users', user.uid),
     {
-      lastKnownCredits: Number(stats.credits || 0),
-      selectedCar: String(stats.selectedCar || ''),
-      careerCompleted: Number(stats.careerCompleted || 0),
+      deviceCredits: Number(stats.credits || 0),
+      deviceSelectedCar: String(stats.selectedCar || ''),
+      deviceCareerCompleted: Number(stats.careerCompleted || 0),
       lastSeenAt: serverTimestamp()
     },
     { merge: true }
